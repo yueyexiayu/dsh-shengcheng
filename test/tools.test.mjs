@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { registerShengchengTools } from "../lib/tools.js";
+import { currentProvider, registerShengchengTools } from "../lib/tools.js";
 import { apply } from "../lib/index.js";
 
 test("apply registers one tool", () => {
@@ -19,6 +19,16 @@ test("apply registers one tool", () => {
   assert.deepEqual(names, ["shengcheng"]);
 });
 
-test("registerShengchengTools no-ops without tools", () => {
-  assert.equal(registerShengchengTools({}), 0);
+test("registerShengchengTools fails visibly without its injected service", () => {
+  assert.throws(() => registerShengchengTools({}), TypeError);
+});
+
+test("provider fallback reads current settings through describe", () => {
+  const ctx = { get: name => name === "settings" ? {
+    describe: options => {
+      assert.deepEqual(options, { redactSecrets: true });
+      return [{ ns: "agent-default-model", value: { provider: "xai" } }];
+    },
+  } : undefined };
+  assert.equal(currentProvider(ctx), "xai");
 });

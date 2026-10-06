@@ -87,6 +87,24 @@ test("extForImageBytes detects png and jpeg", () => {
   assert.equal(extForImageBytes(Buffer.from([0xff, 0xd8, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0])), "jpg");
 });
 
+test("unknown bytes, HTML and video are not images", () => {
+  for (const bytes of [Buffer.alloc(0), Buffer.from("<html>error</html>"), Buffer.from([0, 0, 0, 20, 102, 116, 121, 112, 109, 112, 52, 50])]) {
+    assert.equal(extForImageBytes(bytes), null);
+  }
+});
+
+test("invalid encodings and download addresses are refused", () => {
+  assert.throws(() => imagePayloadFromBody({ data: [{ b64_json: "%%%invalid%%%" }] }), /编码/);
+  for (const url of ["http://example.com/a.png", "https://user:pass@example.com/a.png", "httpmalformed"]) {
+    assert.throws(() => imagePayloadFromBody({ data: [{ url }] }), /地址|HTTPS/);
+  }
+});
+
+test("video polling rejects unrecognized states instead of waiting forever", () => {
+  assert.throws(() => videoPollState(200, {}), /状态/);
+  assert.throws(() => videoPollState(200, { status: "unexpected" }), /状态/);
+});
+
 test("grantFromRecord and jwt account id", () => {
   assert.equal(grantFromRecord(null), null);
   const grant = grantFromRecord({
