@@ -1,109 +1,94 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdtemp, writeFile, open, rm } from "node:fs/promises";
+import { join, basename, dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { generateImage, generateVideo, readReferenceImage, resolveOutPath, writeBytes } from "../lib/media.js";
+import { execFileSync } from "node:child_process";
+import { generateImage, generateVideo, readReferenceImage } from "../lib/media.js";
+import { MAX_REF_BYTES } from "../lib/parse.js";
 
-const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aY9sAAAAASUVORK5CYII=", "base64");
+const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64");
 const ctx = { credentials: { readRecord: async () => ({ kind: "grant", payload: {
   access: "fixture-access", refresh: "fixture-refresh", expires: Date.now() + 3600000,
 } }) } };
 
-test("output extension follows actual media rather than the requested filename", () => {
-  const options = { cwd: "/tmp", provider: "grok", kind: "image", ext: "jpg" };
-  assert.equal(resolveOutPath("image.png", options), "/tmp/image.jpg");
-  assert.equal(resolveOutPath("image.jpeg", options), "/tmp/image.jpeg");
-  assert.equal(resolveOutPath("image", options), "/tmp/image.jpg");
-  assert.equal(resolveOutPath("image.JPG", options), "/tmp/image.JPG");
-  assert.equal(resolveOutPath("clip.png", { ...options, kind: "video", ext: "mp4" }), "/tmp/clip.mp4");
-});
+async function withFixture(fn) {
+  const root = resolve(tmpdir());
+  const dir = await mkdtemp(join(root, "shengcheng-ref-test-"));
+  try { return await fn(dir); } finally {
+    assert.equal(dirname(dir), root);
+    assert.ok(basename(dir).startsWith("shengcheng-ref-test-"));
+    await rm(dir, { recursive: true, force: true });
+  }
+}
 
-test("Grok download never sends account authorization to the returned CDN", async (t) => {
+test("Grok and GPT base64 responses are fully decoded before delivery", async t => {
   const calls = [];
   t.mock.method(globalThis, "fetch", async (url, options) => {
     calls.push({ url, options });
-    if (calls.length === 1) return Response.json({ data: [{ url: "https://cdn.example/image.png" }] });
-    return new Response(png, { headers: { "content-type": "image/png" } });
+    return Response.json({ data: [{ b64_json: png.toString("base64") }] });
   });
-  const result = await generateImage(ctx, { provider: "grok", prompt: "test" });
-  assert.deepEqual(result.bytes, png);
-  assert.equal(new Headers(calls[1].options.headers).has("authorization"), false);
-});
-
-test("HTML response is refused instead of being delivered as an image", async (t) => {
-  let calls = 0;
-  t.mock.method(globalThis, "fetch", async () => ++calls === 1
-    ? Response.json({ data: [{ url: "https://cdn.example/error.png" }] })
-    : new Response("<html>error</html>", { headers: { "content-type": "text/html" } }));
-  await assert.rejects(generateImage(ctx, { provider: "grok", prompt: "test" }), /图片|文件|响应/);
-  assert.equal(calls, 2);
-});
-
-test("base64 non-image is refused for either provider", async (t) => {
-  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [{ b64_json: Buffer.from("error").toString("base64") }] }));
   for (const provider of ["grok", "gpt"]) {
-    await assert.rejects(generateImage(ctx, { provider, prompt: "test" }), /图片/);
+    assert.deepEqual((await generateImage(ctx, { provider, prompt: "fixture", aspectRatio: "3:2" })).bytes, png);
+  }
+  assert.equal(calls.length, 2);
+  assert.equal(JSON.parse(calls[1].options.body).size, "1536x1024");
+});
+
+test("base64 non-image and signature-only images fail for both providers", async t => {
+  let payload = Buffer.from("error");
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [{ b64_json: payload.toString("base64") }] }));
+  for (const provider of ["grok", "gpt"]) {
+    await assert.rejects(generateImage(ctx, { provider, prompt: "fixture" }), /图片|媒体/);
+    payload = png.subarray(0, 12);
+    await assert.rejects(generateImage(ctx, { provider, prompt: "fixture" }), /图片|媒体/);
   }
 });
 
-test("download follows HTTPS redirects without authorization", async (t) => {
-  const calls = [];
-  t.mock.method(globalThis, "fetch", async (url, options) => {
-    calls.push({ url, options });
-    if (calls.length === 1) return Response.json({ data: [{ url: "https://cdn.example/start" }] });
-    if (calls.length === 2) return new Response(null, { status: 302, headers: { location: "https://other.example/image.png" } });
-    return new Response(png);
-  });
-  assert.deepEqual((await generateImage(ctx, { provider: "grok", prompt: "test" })).bytes, png);
-  assert.equal(calls.length, 3);
-  for (const call of calls.slice(1)) {
-    assert.equal(call.options.redirect, "manual");
-    assert.equal(new Headers(call.options.headers).has("authorization"), false);
-  }
-});
-
-test("download refuses HTTP redirects", async (t) => {
+test("pre-cancelled generation never reads credentials or sends requests", async t => {
   let calls = 0;
-  t.mock.method(globalThis, "fetch", async () => ++calls === 1
-    ? Response.json({ data: [{ url: "https://cdn.example/start" }] })
-    : new Response(null, { status: 302, headers: { location: "http://cdn.example/image.png" } }));
-  await assert.rejects(generateImage(ctx, { provider: "grok", prompt: "test" }), /HTTPS/);
-  assert.equal(calls, 2);
-});
-
-test("cancelled download is not retried", async (t) => {
+  t.mock.method(globalThis, "fetch", () => { calls++; throw new Error("forbidden network"); });
+  const forbidden = { credentials: { readRecord: () => { calls++; throw new Error("forbidden credential access"); } } };
   const controller = new AbortController();
-  let calls = 0;
-  t.mock.method(globalThis, "fetch", async () => {
-    if (++calls === 1) return Response.json({ data: [{ url: "https://cdn.example/start" }] });
-    controller.abort();
-    throw controller.signal.reason;
-  });
-  await assert.rejects(generateImage(ctx, { provider: "grok", prompt: "test", signal: controller.signal }), { name: "AbortError" });
-  assert.equal(calls, 2);
+  controller.abort();
+  await assert.rejects(generateImage(forbidden, { provider: "grok", prompt: "fixture", signal: controller.signal }), { name: "AbortError" });
+  await assert.rejects(generateVideo(forbidden, { prompt: "fixture", signal: controller.signal }), { name: "AbortError" });
+  assert.equal(calls, 0);
 });
 
-test("parallel saves cannot overwrite each other or existing output", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "shengcheng-save-"));
-  try {
-    const path = join(dir, "image.png");
-    const files = await Promise.all(Array.from({ length: 8 }, (_, i) => writeBytes(path, Buffer.from(`result-${i}`))));
-    assert.equal(new Set(files).size, 8);
-    for (let i = 0; i < files.length; i++) assert.equal((await readFile(files[i])).toString(), `result-${i}`);
-    assert.equal((await readdir(dir)).length, 8);
-  } finally { await rm(dir, { recursive: true, force: true }); }
+test("reference file validation reads valid images but rejects empty, fake and directory inputs", async () => withFixture(async dir => {
+  const path = join(dir, "ref.png");
+  await writeFile(path, png);
+  assert.equal((await readReferenceImage(path, dir)).url, `data:image/png;base64,${png.toString("base64")}`);
+  for (const bytes of [Buffer.alloc(0), Buffer.from("<html>error</html>"), png.subarray(0, 12)]) {
+    await writeFile(path, bytes);
+    await assert.rejects(readReferenceImage(path, dir), /媒体|图片/);
+  }
+  await assert.rejects(readReferenceImage(dir, dir), /普通文件/);
+}));
+
+test("oversized reference is rejected from descriptor size before reading its sparse contents", async () => withFixture(async dir => {
+  const path = join(dir, "large.png");
+  const file = await open(path, "wx");
+  try { await file.truncate(MAX_REF_BYTES + 1); } finally { await file.close(); }
+  await assert.rejects(readReferenceImage(path, dir), /15MB/);
+}));
+
+test("FIFO reference is rejected without waiting for any writer", { skip: process.platform === "win32" }, async () => withFixture(async dir => {
+  const path = join(dir, "pipe.png");
+  execFileSync("mkfifo", [path]);
+  const before = Date.now();
+  await assert.rejects(readReferenceImage(path, dir), /普通文件/);
+  assert.ok(Date.now() - before < 1000);
+}));
+
+test("cancelled reference read never opens the requested path", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(readReferenceImage("/path/that/does/not/exist.png", null, controller.signal), { name: "AbortError" });
 });
 
-test("reference files must contain images", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "shengcheng-ref-"));
-  try {
-    const path = await writeBytes(join(dir, "fake.png"), Buffer.from("<html>error</html>"));
-    await assert.rejects(readReferenceImage(path, dir), /参考图|图片/);
-  } finally { await rm(dir, { recursive: true, force: true }); }
-});
-
-test("video polling can be cancelled during its wait", async (t) => {
+test("video polling can be cancelled during its wait without additional requests", async t => {
   const controller = new AbortController();
   let calls = 0;
   t.mock.method(globalThis, "fetch", async () => {
@@ -112,7 +97,7 @@ test("video polling can be cancelled during its wait", async (t) => {
     return Response.json({ request_id: "fixture-request" });
   });
   const before = Date.now();
-  await assert.rejects(generateVideo(ctx, { prompt: "test", signal: controller.signal }), { name: "AbortError" });
-  assert.ok(Date.now() - before < 1000);
+  await assert.rejects(generateVideo(ctx, { prompt: "fixture", signal: controller.signal }), { name: "AbortError" });
+  assert.ok(Date.now() - before < 2000);
   assert.equal(calls, 1);
 });

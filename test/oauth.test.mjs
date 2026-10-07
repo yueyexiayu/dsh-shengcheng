@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { authorizedJson, ensureGrant, gptHeaders, readGrant, requestJson } from "../lib/oauth.js";
+import { MAX_JSON_BYTES, videoPollState } from "../lib/parse.js";
 
 const key = "llm-pi-ai/xai";
 const future = () => Date.now() + 3_600_000;
@@ -190,6 +191,119 @@ test("generation HTTP errors redact tokens before upstream detail is truncated",
     assert.doesNotMatch(error.message, /fixture-access-A|fixture-refresh-A/);
     return true;
   });
+});
+
+test("successful HTTP business errors redact access and refresh before parsing", async () => {
+  const hit = await authorizedJson({ credentials: store(record()) }, "grok", async () => ({
+    ok: true, status: 200, body: { status: "failed", error: { message: "fixture-access-A fixture-refresh-A" } },
+  }));
+  await assert.rejects(async () => videoPollState(hit.status, hit.body), error => {
+    assert.doesNotMatch(error.message, /fixture-access-A|fixture-refresh-A/);
+    assert.match(error.message, /REDACTED/);
+    return true;
+  });
+});
+
+test("native Fetch invalid-header failures do not expose synthetic credentials", async () => {
+  const initial = record();
+  initial.payload.access = "fixture-access\nprivate-value";
+  await assert.rejects(authorizedJson({ credentials: store(initial) }, "grok", grant =>
+    requestJson("data:application/json,{}", { headers: { authorization: `Bearer ${grant.access}` } })), error => {
+    assert.doesNotMatch(error.message, /fixture-access|private-value/);
+    return true;
+  });
+});
+
+test("retry request exceptions redact both old and rotated credentials", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => refreshed());
+  let calls = 0;
+  await assert.rejects(authorizedJson({ credentials: store(record()) }, "grok", async () => {
+    if (++calls === 1) return { ok: false, status: 401 };
+    throw new Error("fixture-access-A fixture-refresh-A fixture-renewed-A fixture-rotated-A");
+  }), error => {
+    assert.doesNotMatch(error.message, /fixture-(access|refresh|renewed|rotated)-A/);
+    return true;
+  });
+});
+
+test("request exceptions preserve abort categories without propagating secret causes", async () => {
+  for (const name of ["AbortError", "TimeoutError"]) {
+    await assert.rejects(authorizedJson({ credentials: store(record()) }, "grok", async () => {
+      throw new DOMException("fixture-access-A", name);
+    }), error => {
+      assert.equal(error.name, name);
+      assert.doesNotMatch(error.message, /fixture-access-A/);
+      assert.equal(error.cause, undefined);
+      return true;
+    });
+  }
+});
+
+test("caller cancellation wins over a coincident transport error and is redacted", async () => {
+  const controller = new AbortController();
+  await assert.rejects(authorizedJson({ credentials: store(record()) }, "grok", async () => {
+    controller.abort(new DOMException("fixture-access-A", "AbortError"));
+    throw new Error("transport failed");
+  }, controller.signal), error => {
+    assert.equal(error.name, "AbortError");
+    assert.doesNotMatch(error.message, /fixture-access-A/);
+    return true;
+  });
+});
+
+test("JSON streaming handles split UTF-8 chunks and malformed JSON", async (t) => {
+  const bytes = Buffer.from(JSON.stringify({ message: "完成" }));
+  t.mock.method(globalThis, "fetch", async () => new Response(new ReadableStream({
+    start(controller) {
+      for (const byte of bytes) controller.enqueue(Uint8Array.of(byte));
+      controller.close();
+    },
+  })));
+  const hit = await requestJson("https://fixture.invalid");
+  assert.deepEqual(hit.body, { message: "完成" });
+  t.mock.method(globalThis, "fetch", async () => new Response("not json"));
+  assert.equal((await requestJson("https://fixture.invalid")).body, null);
+});
+
+test("body stream failures cannot leak access tokens", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => new Response(new ReadableStream({
+    pull(controller) { controller.error(new Error("fixture-access-A fixture-refresh-A")); },
+  })));
+  await assert.rejects(authorizedJson({ credentials: store(record()) }, "grok", () => requestJson("https://fixture.invalid")), error => {
+    assert.doesNotMatch(error.message, /fixture-access-A|fixture-refresh-A/);
+    return true;
+  });
+});
+
+test("JSON declared oversized responses are cancelled before body consumption", async (t) => {
+  let cancelled = false;
+  t.mock.method(globalThis, "fetch", async () => new Response(new ReadableStream({
+    cancel() { cancelled = true; },
+  }), { headers: { "content-length": String(MAX_JSON_BYTES + 1) } }));
+  await assert.rejects(requestJson("https://fixture.invalid"), /48MiB/);
+  assert.equal(cancelled, true);
+});
+
+test("JSON actual bytes are bounded even when content-length lies", async (t) => {
+  let cancelled = false;
+  t.mock.method(globalThis, "fetch", async () => new Response(new ReadableStream({
+    pull(controller) { controller.enqueue(new Uint8Array(1024 * 1024)); },
+    cancel() { cancelled = true; },
+  }), { headers: { "content-length": "1" } }));
+  await assert.rejects(requestJson("https://fixture.invalid"), /48MiB/);
+  assert.equal(cancelled, true);
+});
+
+test("JSON timeout cancels a stalled body reader", async (t) => {
+  let cancelled = false;
+  const controller = new AbortController();
+  const reason = new DOMException("fixture body deadline", "TimeoutError");
+  t.mock.method(globalThis, "fetch", async () => new Response(new ReadableStream({
+    pull() { setTimeout(() => controller.abort(reason), 5); return new Promise(() => {}); },
+    cancel() { cancelled = true; },
+  })));
+  await assert.rejects(requestJson("https://fixture.invalid", { signal: controller.signal }), error => error === reason);
+  assert.equal(cancelled, true);
 });
 
 test("GPT account headers contain one account id after Fetch normalization", () => {
