@@ -41,6 +41,36 @@ test("actual video decoding rejects fake ftyp, audio-only MP4 and truncated vide
   await assert.rejects(validateMedia(audio, "video"), /轨道/);
 });
 
+test("Grok-style cover image does not count as a second video track", async () => {
+  // A regular MP4 is required: fragmented output drops the attached_pic disposition.
+  const root = resolve(tmpdir());
+  const dir = await mkdtemp(join(root, "shengcheng-cover-test-"));
+  try {
+    const path = join(dir, "covered.mp4");
+    const { ffmpeg } = await preflightMediaValidation();
+    await exec(ffmpeg, [
+      "-v", "error", "-y",
+      "-f", "lavfi", "-i", "color=c=red:s=32x16:r=5",
+      "-f", "lavfi", "-i", "color=c=blue:s=8x8",
+      "-t", "0.4", "-map", "0:v", "-map", "1:v",
+      "-c:v:0", "mpeg4", "-c:v:1", "mjpeg", "-disposition:v:1", "attached_pic",
+      path,
+    ]);
+    assert.deepEqual(await validateMedia(await readFile(path), "video"), { ext: "mp4", width: 32, height: 16 });
+  } finally {
+    assert.equal(dirname(dir), root);
+    assert.ok(basename(dir).startsWith("shengcheng-cover-test-"));
+    await rm(dir, { recursive: true, force: true });
+  }
+  const dual = await generated([
+    "-f", "lavfi", "-i", "color=c=red:s=16x16:r=5",
+    "-f", "lavfi", "-i", "color=c=blue:s=16x16:r=5",
+    "-t", "0.2", "-map", "0:v", "-map", "1:v", "-c:v", "mpeg4",
+    "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1",
+  ]);
+  await assert.rejects(validateMedia(dual, "video"), /轨道/);
+});
+
 test("corrupt late audio packets fail even with a valid video track", async () => {
   const root = resolve(tmpdir());
   const dir = await mkdtemp(join(root, "shengcheng-audio-test-"));

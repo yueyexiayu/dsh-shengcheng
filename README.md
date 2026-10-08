@@ -61,6 +61,13 @@ for file in lib/*.js; do node --check "$file" || exit; done
 node --test
 ```
 
+## 本次修复验证（2026-10-08）
+
+- 真实 Grok `grok-imagine-video-1.5` 图生视频 MP4 含三条轨道：H.264 正片、AAC 音轨，以及 `disposition.attached_pic=1` 的 MJPEG 封面。旧校验把封面也算成视频轨道，因此报「媒体缺少唯一可解码的视频或图像轨道」。
+- 校验现在忽略 `attached_pic`、`timed_thumbnails`、`still_image`，只解码那一条可播放视频及其音轨。两条真正的视频轨道、纯音频和截断文件仍拒绝。
+- 用下载到的真实文件验收：`validateMedia` 返回 `{ ext: "mp4", width: 544, height: 544 }`。`node --test` 89/89 通过。
+- 已加载的桌面 Host 仍使用旧代码。完全退出 DeepSeek Harness（⌘Q）并新开会话后，工具才会走到这次修复。
+
 ## 本次修复验证（2026-10-07）
 
 - `node --test`：88/88 通过；全部源码语法检查、diff whitespace 检查通过。
