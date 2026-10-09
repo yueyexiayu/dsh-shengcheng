@@ -137,6 +137,49 @@ test("official FS_ABORTED is mapped back to execution cancellation", async t => 
   await assert.rejects(referencePath(g.ctx, g.exec, "a.png", g.cwd), { name: "AbortError" });
 });
 
+test("reference image uses the same sandbox fence as writes", async t => {
+  const f = await fixture(t, "workspace-write");
+  const inside = join(f.cwd, "ref.png");
+  await writeFile(inside, "png");
+  const before = f.state.checks;
+  assert.equal(await referencePath(f.ctx, f.exec, "ref.png", f.cwd), await realpath(inside));
+  assert.equal(await referencePath(f.ctx, f.exec, inside, f.cwd), await realpath(inside));
+  assert.ok(f.state.checks > before);
+
+  const outside = join(f.root, "outside.png");
+  await assert.rejects(referencePath(f.ctx, f.exec, outside, f.cwd), error => {
+    assert.equal(error.code, "FS_SANDBOX_DENIED");
+    assert.match(error.message, /\[sandbox: file access denied under workspace-write mode\]/);
+    assert.match(error.message, /参考图不在当前沙箱允许的路径内/);
+    assert.doesNotMatch(error.message, /无权写入/);
+    return true;
+  });
+  await assert.rejects(referencePath(f.ctx, f.exec, "../outside.png", f.cwd), /参考图不在当前沙箱允许的路径内/);
+
+  await mkdir(join(f.root, "outside-dir"));
+  await writeFile(join(f.root, "outside-dir", "pic.png"), "png");
+  await symlink(join(f.root, "outside-dir", "pic.png"), join(f.cwd, "alias.png"));
+  await assert.rejects(referencePath(f.ctx, f.exec, "alias.png", f.cwd), /workspace-write/);
+
+  f.state.mode = "read-only";
+  await assert.rejects(referencePath(f.ctx, f.exec, "ref.png", f.cwd), error => {
+    assert.equal(error.code, "FS_SANDBOX_DENIED");
+    assert.match(error.message, /read-only/);
+    assert.match(error.message, /参考图不在当前沙箱允许的路径内/);
+    return true;
+  });
+
+  f.state.mode = "danger-full-access";
+  assert.equal(await referencePath(f.ctx, f.exec, outside, f.cwd), join(await realpath(f.root), "outside.png"));
+
+  let processed = 0;
+  const original = f.ctx.fs.processPath;
+  f.ctx.fs.processPath = target => { processed++; return original(target); };
+  delete f.ctx.fs.checkedTarget;
+  await assert.rejects(referencePath(f.ctx, f.exec, "ref.png", f.cwd), /不支持/);
+  assert.equal(processed, 0);
+});
+
 async function toolFixture(t, mode) {
   const f = await fixture(t, mode);
   let tool;

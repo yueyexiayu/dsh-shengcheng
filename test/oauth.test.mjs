@@ -113,6 +113,25 @@ test("concurrent 401 requests reuse the already refreshed opaque Grok grant", as
   assert.ok(results.every(result => result.ok));
 });
 
+test("replayOn401 false refreshes credentials without replaying the paid request", async (t) => {
+  const credentials = store(record());
+  let refreshCalls = 0;
+  let requestCalls = 0;
+  t.mock.method(globalThis, "fetch", async () => { refreshCalls++; return refreshed(); });
+  await assert.rejects(() => authorizedJson({ credentials }, "grok", async () => {
+    requestCalls++;
+    return { ok: false, status: 401, body: { error: "fixture-access-A fixture-refresh-A" } };
+  }, undefined, { replayOn401: false }), error => {
+    assert.match(error.message, /凭证已刷新，生成请求未自动重试，请重新发起/);
+    assert.doesNotMatch(error.message, /fixture-access-A|fixture-refresh-A|fixture-renewed-A|fixture-rotated-A/);
+    return true;
+  });
+  assert.equal(requestCalls, 1);
+  assert.equal(refreshCalls, 1);
+  assert.notEqual(credentials.value().payload.access, "fixture-access-A");
+  assert.notEqual(credentials.value().payload.refresh, "fixture-refresh-A");
+});
+
 for (const provider of ["grok", "gpt"]) {
   for (const action of ["switch", "logout"]) {
     test(`${provider} stale 401 after ${action} cannot refresh or retry with another account`, async (t) => {
