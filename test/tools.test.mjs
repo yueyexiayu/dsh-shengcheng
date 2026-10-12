@@ -23,6 +23,12 @@ test("registerShengchengTools fails visibly without its injected service", () =>
   assert.throws(() => registerShengchengTools({}), TypeError);
 });
 
+test("auto provider uses the active request header before global defaults", () => {
+  const ctx = { get: () => ({ currentSelection: () => ({ provider: "xai" }) }) };
+  const exec = { agent: { session: { header: { config: { provider: "old-immutable-provider" } }, requestHeader: () => ({ config: { provider: "openai-codex" } }) } } };
+  assert.equal(currentProvider(ctx, exec), "openai-codex");
+});
+
 test("provider fallback reads current settings through describe", () => {
   const ctx = { get: name => name === "settings" ? {
     describe: options => {

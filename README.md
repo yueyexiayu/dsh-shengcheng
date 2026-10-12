@@ -56,12 +56,23 @@
 
 ## 开发
 
+正式 FS/OAuth 兼容测试直接实例化已安装版本的 `SandboxPolicyService`、`SandboxedFileSystem` 和 pi-ai OAuth provider；引用必须是完整、只读的官方安装包提取目录，缺失 `DSH_OFFICIAL_ROOT` 或包文件会明确失败，不跳过、不切回旧 checkout。测试只写随机临时 fixture，网络用 mock、凭据为合成数据；不读取用户凭据，不调用真实生成/续期。
+
 ```bash
-for file in lib/*.js; do node --check "$file" || exit; done
-node --test
+export DSH_OFFICIAL_ROOT=/absolute/path/to/extracted-official-runtime
+for file in lib/*.js; do /usr/local/bin/node --check "$file" || exit; done
+/usr/local/bin/node --test
 ```
 
-## 本次修复验证（2026-10-08）
+## 本次修复验证（2026-10-12）
+
+- 参考图只走 composed `fs.resolve` / `stat` / `readBytes` 正式读接口；官方 `dsh-fs-sandbox` 在所有模式允许读取，没有 `checkedReadTarget`。`checkedTarget` 是写入 fence，不再误用于参考图。普通文件检查、15 MiB 有界读取、取消及完整 FFmpeg 解码保留；不使用裸 fs 读取降级。
+- 实际官方 `0.2.1-alpha.2` 隔离 Cordis fixture 复现 read-only 参考图错误（修复前失败、修复后成功），工作区外/符号链接参考读也正确；输出 read-only 仍拒绝，workspace-write 遵从工作区与临时根，保存/取消/策略变化均验证。
+- 保留 pi-ai `0.87.1`：比对官方 `1.0.2` 的 `dist/auth/helpers.js`、`dist/auth/oauth/xai.js`、`dist/auth/oauth/openai-codex.js`，Grok OAuth 实现相同，Codex 差异为登录 callback，不影响本插件只使用的 `refresh(credential, signal)` / `toAuth`。两版实模块 mock refresh 的请求、grant 字段和 toAuth 结果一致；无需依赖升级。`provider=auto` 在工具执行期间优先当前已记录的 request/header，不读取过期的 immutable header config。
+- 完整套件 97/97 通过（包括正式 fixture helper 加载检查），全部 lib/test 语法及 `git diff --check` 通过；加隔离 guard 拒绝真实用户数据和外网。所有随机 fixture 经 after/finally 清理，FFmpeg 子进程取消回收通过。
+- 已清理被淘汰的裸参考图 open/stream 实现及写 fence 参考专用参数；未改官方代码、凭据或 desktop 配置。真实账号生成、桌面重新加载仍未验收，历史成功不替代本版验收。
+
+## 历史修复验证（2026-10-08）
 
 - 真实 Grok `grok-imagine-video-1.5` 图生视频 MP4 含三条轨道：H.264 正片、AAC 音轨，以及 `disposition.attached_pic=1` 的 MJPEG 封面。旧校验把封面也算成视频轨道，因此报「媒体缺少唯一可解码的视频或图像轨道」。
 - 校验现在忽略 `attached_pic`、`timed_thumbnails`、`still_image`，只解码那一条可播放视频及其音轨。两条真正的视频轨道、纯音频和截断文件仍拒绝。
