@@ -1,6 +1,32 @@
-# shengcheng
+<div align="center">
+<img src="docs/repo-assets/hero.svg" width="100%" alt="已登录账号、媒体生成和文件验证的原创示意，非生成样片" />
+<h1>shengcheng · 让想法成为媒体</h1>
+<p><strong>使用 DSH 已登录账号生成图片，用 Grok 生成视频。</strong></p>
+<p><strong>简体中文</strong> · <a href="README.en.md">English</a></p>
+<p><a href="package.json">v0.1.1</a> · <a href="LICENSE">MIT</a> · DSH desktop plugin</p>
+<p><a href="#核心能力">核心能力</a> · <a href="#工作方式">工作方式</a> · <a href="#安装">安装</a> · <a href="#参数与安全边界">参数与安全边界</a> · <a href="#开发">开发</a></p>
+</div>
 
-当前项目是深度适配个人使用，项目只是给大家提供思路和借鉴，尽量不要直接照搬。
+---
+
+面向个人桌面工作流的参考实现，不建议未经核对直接照搬。**账号可聊天不代表生成接口可用；GPT 真实账号生图仍未验收。**
+
+## 核心能力
+
+<table><tr>
+<td width="33%"><strong>🎨 两种生图提供方</strong><br/><br/>Grok Imagine 与 GPT Image；不需要把 API Key 或 token 交给模型。</td>
+<td width="33%"><strong>🎬 Grok 视频</strong><br/><br/>支持文字/参考图视频流程；本插件不提供 GPT 视频生成。</td>
+<td width="33%"><strong>🧪 真实媒体验证</strong><br/><br/>FFmpeg/ffprobe 完整解码，按实际格式保存，不把错误页面当图片。</td>
+</tr><tr>
+<td><strong>🔐 Host 账号续期</strong><br/><br/>共享凭据锁避免旧续期覆盖换号，不能确认连续性时明确停止。</td>
+<td><strong>📁 不覆盖输出</strong><br/><br/>遵从会话文件策略，以私有暂存和独占发布保存实际路径。</td>
+<td><strong>🧾 失败可恢复</strong><br/><br/>已生成但发布失败会报告可恢复文件，先恢复，不盲目重复付费生成。</td>
+</tr></table>
+
+## 工作方式
+
+![先检查账号、参数、输出权限与媒体依赖，再请求生成，解码验证后发布实际文件。](docs/repo-assets/workflow.zh-CN.svg)
+
 
 通过 DeepSeek Harness 里**已经登录**的 Grok / GPT 账号调用图像生成接口，Grok 分支还提供视频生成。是否可用取决于远端接口接受该账号及其权限；对话登录成功不代表生成接口一定可用。当前对话模型不是它们也可以调用。不要走 API key，不要让模型自己 curl。
 
@@ -26,7 +52,7 @@
 本插件使用官方 `@earendil-works/pi-ai@0.87.1` 的 OAuth 续期实现。在插件源码目录安装依赖：
 
 ```bash
-/Users/ning/.local/bin/pnpm install --frozen-lockfile
+pnpm install --frozen-lockfile
 ```
 
 遵循项目指定的 `pnpm@11.7.0`。当前 Grok/GPT 续期路径不依赖其他 provider 的安装脚本，`pnpm-workspace.yaml` 已明确禁用相关脚本。
@@ -64,6 +90,9 @@ for file in lib/*.js; do /usr/local/bin/node --check "$file" || exit; done
 /usr/local/bin/node --test
 ```
 
+<details>
+<summary><strong>历史修复与验收记录（不代表本轮重跑）</strong></summary>
+
 ## 本次修复验证（2026-10-12）
 
 - 参考图只走 composed `fs.resolve` / `stat` / `readBytes` 正式读接口；官方 `dsh-fs-sandbox` 在所有模式允许读取，没有 `checkedReadTarget`。`checkedTarget` 是写入 fence，不再误用于参考图。普通文件检查、15 MiB 有界读取、取消及完整 FFmpeg 解码保留；不使用裸 fs 读取降级。
@@ -93,3 +122,13 @@ for file in lib/*.js; do /usr/local/bin/node --check "$file" || exit; done
 - 使用该图调用 `grok-imagine-video-1.5` 生视频成功：H.264，544×544，约 1.04 秒，完整解码通过
 - 46 项测试通过；当前官方 Host 的 8 项检查通过，包含实际 JPEG 后缀、失败状态及重载
 - GPT 的真实生成仍未验收，不将 Grok 的结果视为 GPT 也通过
+
+</details>
+
+## 本轮文档验证
+
+本轮仅检查双语、图示、链接和桌面/手机排版；未重跑产品测试、未调用付费生成、未重启 DSH。历史记录不代表当前运行实例已验收。
+
+[MIT License](LICENSE)。
+
+<div align="center"><sub>认真生成，验证后交付。 · <a href="README.en.md">Read in English →</a></sub></div>
