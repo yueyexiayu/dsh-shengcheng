@@ -50,6 +50,16 @@ test('selects DSH provider and model as a pair, and preserves old settings on sa
   assert.match(app.text(), /默认设置已保存/);
 });
 
+test('unset routes retain defaults without labeling them incompatible', async () => {
+  const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog } : { ok: true, revision: 'r1', settings: defaults });
+  await app.settle();
+  const resolution = app.label('默认视频分辨率');
+  const option = resolution.props.children.find(item => item?.props?.value === '720p');
+  assert.equal(resolution.props.value, '720p');
+  assert.equal(option.props.children.join(''), '720p');
+  assert.equal(option.props.disabled, false);
+});
+
 test('switching routes preserves incompatible defaults and requires correction before saving', async () => {
   const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog } : { ok: true, settings: defaults });
   await app.settle();
