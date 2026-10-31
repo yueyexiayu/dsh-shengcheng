@@ -276,6 +276,44 @@ test("submission diagnosis is reported without exposing provider errors", async 
   assert.equal(calls, 2);
 });
 
+test("503 compares the actual video request with only the selected route's declared catalog", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ videoRoute: { provider: "p", model: "selected" }, videoResolution: "480p", videoDuration: 5, outputDirectory: "" }));
+  const requests = [];
+  f.ctx.llm.generateMedia = async options => { requests.push(options); throw Object.assign(new Error("private upstream body"), { code: "MEDIA_JOB_UNCERTAIN", failure: { mediaDiagnostic: "submit_http", status: 503 } }); };
+  const route = { provider: "p", id: "selected", kind: "video", availability: "unverified", parameters: { duration: { min: 5, max: 10 }, resolutions: ["768p", "1080p"] } };
+  let catalogs = 0;
+  f.ctx.llm.listMediaModels = async (kind, provider) => { catalogs++; assert.equal(kind, "video"); assert.equal(provider, "p"); return [route]; };
+  await assert.rejects(f.tool.execute({ kind: "video", prompt: "test", duration: 3 }, f.exec), error => {
+    assert.match(error.message, /HTTP 503/);
+    assert.match(error.message, /本次时长 3 秒，当前目录声明 5–10 秒/);
+    assert.match(error.message, /本次分辨率 480p，当前目录声明 768p、1080p/);
+    assert.match(error.message, /只是排查线索，未必是 HTTP 503 的原因/);
+    assert.doesNotMatch(error.message, /private upstream body/);
+    return true;
+  });
+  assert.equal(requests[0].duration, 3);
+  assert.equal(requests[0].resolution, "480p");
+  await assert.rejects(f.tool.execute({ kind: "video", prompt: "test", duration: 6, resolution: "768P" }, f.exec), error => /HTTP 503/.test(error.message) && !/当前目录声明/.test(error.message));
+  assert.equal(requests[1].duration, 6);
+  assert.equal(requests[1].resolution, "768P");
+  assert.equal(catalogs, 2);
+});
+
+test("503 does not infer mismatches from unavailable, unrelated or malformed catalogs", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ videoRoute: { provider: "p", model: "selected" }, videoResolution: "480p", videoDuration: 3, outputDirectory: "" }));
+  f.ctx.llm.generateMedia = async () => { throw Object.assign(new Error("private"), { code: "MEDIA_JOB_UNCERTAIN", failure: { mediaDiagnostic: "submit_http", status: 503 } }); };
+  for (const result of [
+    () => { throw new Error("private catalog response"); },
+    () => [],
+    () => [{ provider: "p", id: "other", kind: "video", availability: "declared", parameters: { duration: { min: 5, max: 10 } } }],
+    () => [{ provider: "p", id: "selected", kind: "video", availability: "unknown", parameters: { duration: { min: 5, max: 10 } } }],
+    () => [{ provider: "p", id: "selected", kind: "video", availability: "declared", parameters: { duration: { min: "5", max: 10 }, resolutions: ["private-secret"] } }],
+  ]) {
+    f.ctx.llm.listMediaModels = async () => result();
+    await assert.rejects(f.tool.execute({ kind: "video", prompt: "test" }, f.exec), error => /HTTP 503/.test(error.message) && !/当前目录声明|private/.test(error.message));
+  }
+});
+
 test("ambiguous video provider failures do not trigger automatic fallback or block later calls", async t => {
   const f = await toolFixture(t, "workspace-write", async () => ({ videoRoute: { provider: "p", model: "main" }, videoFallbackRoute: { provider: "q", model: "fallback" }, outputDirectory: "" }));
   const calls = [];

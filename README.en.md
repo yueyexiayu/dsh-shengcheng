@@ -14,6 +14,8 @@ Parameters explicitly given in a conversation take precedence over these default
 
 When the conversation does not explicitly specify a resolution, the saved default is sent. Choosing automatic omits the resolution; provider support is determined by the actual request.
 
+After an HTTP 503 video submission, the plugin reports any discrepancy between the request and the current route's declared duration or resolution as a diagnostic clue. The catalog does not establish the cause or change the requested parameters.
+
 Settings from the previous version are retained in `legacySettings`, and common image, video, and directory defaults remain in use. Old Grok/GPT model settings are not automatically mapped to different DSH routes; select image and video models again.
 
 Hosts sharing the same `DSH_HOME` read the same settings. If another window saves first, a stale save is rejected with a refresh prompt. Incomplete or damaged old settings are reported and left untouched.
@@ -32,4 +34,4 @@ Tests use the Node test runner. Tests involving DSH filesystem permissions requi
 
 For the cross-module integration test, export `DSH_HOST_SOURCE_ROOT` pointing to a DSH source checkout with dependencies installed, then run `"$DSH_HOST_SOURCE_ROOT/node_modules/.bin/vitest" run --config test/host-vitest.config.mjs`. The test reports an error if that variable is missing.
 
-Version: 0.1.14
+Version: 0.1.15
