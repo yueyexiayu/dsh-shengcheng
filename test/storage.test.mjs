@@ -317,6 +317,23 @@ test("two timed out attempts have independent deadlines and report both failures
   } finally { AbortSignal.timeout = original; }
 });
 
+test("local preflight and reference validation timeouts do not use fallback", async t => {
+  for (const localDeadline of [5_000, 60_000]) {
+    const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, imageFallbackRoute: { provider: "provider-c", model: "override-model" }, outputDirectory: "" }));
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64");
+    await writeFile(join(f.cwd, "reference.png"), png);
+    let calls = 0;
+    f.ctx.llm.generateMedia = async () => { calls++; throw new Error("unexpected generation"); };
+    const original = AbortSignal.timeout;
+    try {
+      AbortSignal.timeout = ms => ms === localDeadline ? AbortSignal.abort(new DOMException("local timeout", "TimeoutError")) : original(ms);
+      await assert.rejects(f.tool.execute({ prompt: "draw", image_path: "reference.png" }, f.exec), { name: "TimeoutError" });
+      assert.equal(f.catalogSignals.length, 1);
+      assert.equal(calls, 0);
+    } finally { AbortSignal.timeout = original; }
+  }
+});
+
 test("a fallback identical to the resolved main route is never called twice", async t => {
   const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, imageFallbackRoute: { provider: "provider-a", model: "image-model" }, outputDirectory: "" }));
   let calls = 0;
