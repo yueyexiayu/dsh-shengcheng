@@ -1,81 +1,41 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { currentProvider, registerShengchengTools, resolveGenerationDefaults } from "../lib/tools.js";
+import { generationSignal, registerShengchengTools, resolveGenerationDefaults, resolveRoute } from "../lib/tools.js";
 import { apply } from "../lib/index.js";
 
-test("apply registers one tool", () => {
-  const names = [];
-  const ctx = {
-    connection: { fetch: { register(route) { assert.equal(route.path, "/api/shengcheng/settings"); } } },
-    tools: {
-      register(tool) {
-        names.push(tool.name);
-        assert.equal(typeof tool.execute, "function");
-        assert.equal(typeof tool.output.render, "function");
-        assert.equal(tool.parameters.properties.kind.type, "string");
-      },
-    },
-  };
-  apply(ctx);
+test("registers the generation tool and the two authenticated Host routes", () => {
+  const names = [], paths = [];
+  apply({ llm: {}, tools: { register(tool) { names.push(tool.name); assert.equal(typeof tool.execute, "function"); assert.equal(tool.timeoutMs, 1_210_000); } }, connection: { fetch: { register(route) { paths.push(route.path); } } } });
   assert.deepEqual(names, ["shengcheng"]);
-});
-
-test("registerShengchengTools fails visibly without its injected service", () => {
+  assert.deepEqual(paths, ["/api/shengcheng/settings", "/api/shengcheng/models"]);
   assert.throws(() => registerShengchengTools({}), TypeError);
 });
 
-test("auto provider uses the active request header before global defaults", () => {
-  const ctx = { get: () => ({ currentSelection: () => ({ provider: "xai" }) }) };
-  const exec = { agent: { session: { header: { config: { provider: "old-immutable-provider" } }, requestHeader: () => ({ config: { provider: "openai-codex" } }) } } };
-  assert.equal(currentProvider(ctx, exec), "openai-codex");
+test("generation deadline is 600 seconds and propagates upstream cancellation", () => {
+  const original = AbortSignal.timeout;
+  let delay;
+  try {
+    AbortSignal.timeout = value => { delay = value; return original(value); };
+    const controller = new AbortController(), signal = generationSignal(controller.signal);
+    assert.equal(delay, 600_000);
+    controller.abort();
+    assert.equal(signal.aborted, true);
+  } finally { AbortSignal.timeout = original; }
 });
 
-test("provider fallback reads current settings through describe", () => {
-  const ctx = { get: name => name === "settings" ? {
-    describe: options => {
-      assert.deepEqual(options, { redactSecrets: true });
-      return [{ ns: "agent-default-model", value: { provider: "xai" } }];
-    },
-  } : undefined };
-  assert.equal(currentProvider(ctx), "xai");
+test("keeps provider/model identity and explicit route takes precedence", () => {
+  const settings = { imageRoute: { provider: "alpha", model: "same" }, videoRoute: { provider: "beta", model: "video" } };
+  assert.deepEqual(resolveRoute({}, settings, "image"), { provider: "alpha", model: "same" });
+  assert.deepEqual(resolveRoute({ provider: "gamma", model: "other" }, settings, "image"), { provider: "gamma", model: "other" });
+  assert.deepEqual(resolveRoute({ model: "other" }, settings, "image"), { provider: "alpha", model: "other" });
+  assert.deepEqual(resolveRoute({}, settings, "video"), { provider: "beta", model: "video" });
+  assert.throws(() => resolveRoute({ provider: "gamma" }, settings, "image"), /同时指定模型/);
+  assert.throws(() => resolveRoute({}, {}, "image"), /选择/);
 });
 
-test("image defaults apply only to fields not specified in the request", () => {
-  const settings = { provider: "gpt", imageAspectRatio: "3:2", imageQuality: "medium", videoResolution: "480p", videoDuration: 9 };
-  assert.deepEqual(resolveGenerationDefaults({ prompt: "draw" }, settings), {
-    prompt: "draw", provider: "gpt", aspect_ratio: "3:2", quality: "medium",
-  });
-  assert.deepEqual(resolveGenerationDefaults({ prompt: "draw", provider: "grok", aspect_ratio: "16:9", quality: "low", path: "x.png" }, settings), {
-    prompt: "draw", provider: "grok", aspect_ratio: "16:9", quality: "low", path: "x.png",
-  });
-  assert.deepEqual(resolveGenerationDefaults({ prompt: "draw", size: "1024x1536" }, settings), {
-    prompt: "draw", provider: "gpt", size: "1024x1536", quality: "medium",
-  });
-  assert.deepEqual(resolveGenerationDefaults({ prompt: "draw" }, { provider: "auto", imageAspectRatio: "auto", imageQuality: "auto" }), {
-    prompt: "draw", provider: "auto",
-  });
-});
-
-test("video defaults preserve Grok routing and explicit request values", () => {
-  const settings = { provider: "gpt", imageAspectRatio: "3:2", imageQuality: "medium", videoResolution: "480p", videoDuration: 9 };
-  assert.deepEqual(resolveGenerationDefaults({ prompt: "animate", kind: "video" }, settings), {
-    prompt: "animate", kind: "video", resolution: "480p", duration: 9,
-  });
-  assert.deepEqual(resolveGenerationDefaults({ prompt: "animate", kind: "video", provider: "gpt", resolution: "1080p", duration: 3 }, settings), {
-    prompt: "animate", kind: "video", provider: "gpt", resolution: "1080p", duration: 3,
-  });
-});
-
-test("switching providers does not inherit incompatible image defaults", () => {
-  assert.deepEqual(resolveGenerationDefaults(
-    { prompt: "draw", provider: "gpt", quality: "high" },
-    { provider: "grok", imageAspectRatio: "16:9", imageQuality: "medium" }, "gpt"),
-  { prompt: "draw", provider: "gpt", quality: "high" });
-  assert.deepEqual(resolveGenerationDefaults(
-    { prompt: "draw", provider: "grok", aspect_ratio: "16:9" },
-    { provider: "gpt", imageAspectRatio: "3:2", imageQuality: "high" }, "grok"),
-  { prompt: "draw", provider: "grok", aspect_ratio: "16:9" });
-  assert.deepEqual(resolveGenerationDefaults(
-    { prompt: "draw" }, { provider: "grok", imageAspectRatio: "16:9", imageQuality: "medium" }, "grok"),
-  { prompt: "draw", provider: "grok", aspect_ratio: "16:9", quality: "medium" });
+test("explicit per-call settings override persisted defaults", () => {
+  const settings = { imageAspectRatio: "3:2", imageQuality: "medium", videoResolution: "720p", videoDuration: 5 };
+  assert.deepEqual(resolveGenerationDefaults({ prompt: "p" }, settings), { prompt: "p", aspect_ratio: "3:2", quality: "medium" });
+  assert.deepEqual(resolveGenerationDefaults({ prompt: "p", size: "custom", quality: "high" }, settings), { prompt: "p", size: "custom", quality: "high" });
+  assert.deepEqual(resolveGenerationDefaults({ kind: "video", duration: 3 }, settings), { kind: "video", duration: 3, resolution: "720p" });
 });

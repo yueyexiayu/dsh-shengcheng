@@ -1,8 +1,8 @@
 {
   "name": "shengcheng",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
-  "description": "DSH plugin: generate images with logged-in Grok/GPT accounts, and videos with Grok.",
+  "description": "DSH plugin: generate images and videos using configured media-capable model routes.",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -10,10 +10,6 @@
     "./client": "./lib/client.js",
     "./locale/*.json": "./locale/*.json"
   },
-  "dependencies": {
-    "@earendil-works/pi-ai": "0.87.1"
-  },
-  "packageManager": "pnpm@11.7.0",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

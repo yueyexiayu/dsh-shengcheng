@@ -5,6 +5,9 @@ import { tmpdir } from "node:os";
 import { join, dirname, resolve, relative, isAbsolute } from "node:path";
 import { prepareOutput, resolveOutPath, sessionCwd, referencePath } from "../lib/storage.js";
 import { registerShengchengTools } from "../lib/tools.js";
+import { execFileSync } from "node:child_process";
+import { preflightMediaValidation } from "../lib/validate-media.js";
+import { MAX_IMAGE_BYTES } from "../lib/parse.js";
 
 // Double models the inspected official resolve/checkedTarget/processPath contract;
 // it is deliberately independent of the plugin's storage implementation.
@@ -162,100 +165,197 @@ async function toolFixture(t, mode, getDefaults) {
   const f = await fixture(t, mode);
   let tool;
   f.ctx.tools = { register: value => { tool = value; } };
-  f.ctx.credentials = { readRecord: async () => ({ kind: "grant", payload: {
-    access: "synthetic-access", refresh: "synthetic-refresh", expires: Date.now() + 3600000,
-  } }) };
+  const routes = [
+    { provider: "provider-a", id: "image-model", kind: "image", availability: "unverified" },
+    { provider: "provider-b", id: "video-model", kind: "video", availability: "declared" },
+    { provider: "provider-c", id: "override-model", kind: "image", availability: "declared" },
+    { provider: "provider-d", id: "backup-video", kind: "video", availability: "declared" },
+  ];
+  const catalogSignals = [];
+  f.ctx.llm = { listMediaModels: async (kind, provider, signal) => {
+    assert.ok(signal instanceof AbortSignal);
+    catalogSignals.push(signal);
+    if (provider === undefined) throw new Error("another provider is unavailable");
+    return routes.filter(route => route.kind === kind && route.provider === provider);
+  } };
   registerShengchengTools(f.ctx, getDefaults);
-  return { ...f, tool };
+  return { ...f, tool, catalogSignals };
 }
 
-test("full registered tool rejects policy, bad paths and inapplicable parameters before paid requests", async t => {
-  const f = await toolFixture(t, "read-only");
-  let requests = 0;
-  t.mock.method(globalThis, "fetch", () => { requests++; throw new Error("unexpected request"); });
-  await assert.rejects(f.tool.execute({ prompt: "fixture", provider: "grok" }, f.exec), /read-only/);
-  f.state.mode = "workspace-write";
-  await assert.rejects(f.tool.execute({ prompt: "fixture", path: "../outside.png" }, f.exec), /workspace-write/);
-  await assert.rejects(f.tool.execute({ prompt: "fixture", path: "invalid\0.png" }, f.exec), /控制字符/);
-  for (const args of [
-    { provider: "grok", duration: 5 }, { provider: "grok", image_path: "ref.png" },
-    { provider: "grok", size: "1024x1024" }, { provider: "gpt", resolution: "1k" },
-    { kind: "video", quality: "high" }, { kind: "video", size: "1024x1024" },
-    { provider: "gpt", aspect_ratio: "16:9" }, { provider: "gpt", aspect_ratio: "bad-ratio" },
-  ]) await assert.rejects(f.tool.execute({ prompt: "fixture", ...args }, f.exec));
-  assert.equal(requests, 0);
-  assert.deepEqual(await readdir(f.cwd), []);
-});
-
-test("full tool saves decoded media through checked filesystem and renders lossless path", async t => {
-  const f = await toolFixture(t, "workspace-write");
+test("Host route selection dispatches the chosen image model and applies explicit overrides", async t => {
+  let settings = { imageRoute: { provider: "provider-a", model: "image-model" }, imageAspectRatio: "3:2", imageQuality: "medium", outputDirectory: "generated" };
+  const f = await toolFixture(t, "workspace-write", async () => settings);
   const bytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64");
-  let requests = 0;
-  t.mock.method(globalThis, "fetch", async () => { requests++; return Response.json({ data: [{ b64_json: bytes.toString("base64") }] }); });
-  const args = { prompt: "fixture", provider: "grok", path: "图片 'quoted' image.png" };
-  const result = await f.tool.execute(args, f.exec);
-  assert.equal(requests, 1);
-  assert.deepEqual(await readFile(result.path), bytes);
-  const rendered = f.tool.output.render(args, result)[0].text;
-  assert.equal(JSON.parse(rendered.split("shengcheng_result ")[1]).path, result.path);
-  assert.deepEqual(await readdir(f.cwd), ["图片 'quoted' image.png"]);
-  assert.ok(f.state.checks > 5);
-});
-
-test("tool reads saved defaults per request, applies explicit overrides, and checks the default directory", async t => {
-  let defaults = { provider: "grok", grokImageModel: "grok-image-custom", gptImageModel: "gpt-image-custom", imageAspectRatio: "3:2", imageQuality: "medium", outputDirectory: "generated" };
-  const f = await toolFixture(t, "workspace-write", async () => defaults);
-  const bytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64");
-  const bodies = [];
-  t.mock.method(globalThis, "fetch", async (_url, options) => {
-    bodies.push(JSON.parse(options.body));
-    return Response.json({ data: [{ b64_json: bytes.toString("base64") }] });
-  });
+  const requests = [];
+  f.ctx.llm.generateMedia = async options => { requests.push(options); return { provider: options.provider, model: options.model, kind: options.kind, bytes }; };
   const first = await f.tool.execute({ prompt: "first" }, f.exec);
   assert.equal(dirname(first.path), join(await realpath(f.cwd), "generated"));
-  assert.equal(bodies[0].aspect_ratio, "3:2");
-  assert.equal(bodies[0].quality, "medium");
-  assert.equal(bodies[0].model, "grok-image-custom");
-  assert.equal(first.model, "grok-image-custom");
-  defaults = { ...defaults, imageAspectRatio: "2:3", imageQuality: "low" };
-  const second = await f.tool.execute({ prompt: "second", model: "grok-image-override", aspect_ratio: "1:1", quality: "auto", path: "explicit.png" }, f.exec);
+  assert.equal(requests[0].provider, "provider-a");
+  assert.equal(requests[0].model, "image-model");
+  assert.equal(requests[0].signal, f.catalogSignals[0]);
+  assert.equal(requests[0].aspectRatio, "3:2");
+  assert.equal(requests[0].quality, "medium");
+  assert.equal(first.provider, "provider-a");
+  assert.equal(first.model, "image-model");
+  const second = await f.tool.execute({ prompt: "second", provider: "provider-c", model: "override-model", aspect_ratio: "1:1", quality: "high", path: "explicit.png" }, f.exec);
+  assert.equal(requests[1].provider, "provider-c");
+  assert.equal(requests[1].model, "override-model");
+  assert.equal(requests[1].aspectRatio, "1:1");
+  assert.equal(requests[1].quality, "high");
   assert.equal(second.path, join(await realpath(f.cwd), "explicit.png"));
-  assert.equal(bodies[1].aspect_ratio, "1:1");
-  assert.equal(bodies[1].quality, "auto");
-  assert.equal(bodies[1].model, "grok-image-override");
-  assert.equal(second.model, "grok-image-override");
-  const gpt = await f.tool.execute({ prompt: "third", provider: "gpt", path: "gpt.png" }, f.exec);
-  assert.equal(bodies[2].model, "gpt-image-custom");
-  assert.equal(gpt.model, "gpt-image-custom");
-  defaults = { ...defaults, outputDirectory: "../outside" };
-  await assert.rejects(f.tool.execute({ prompt: "fourth" }, f.exec), /workspace-write/);
-  await assert.rejects(f.tool.execute({ prompt: "fifth", model: "not a model" }, f.exec), /模型 ID/);
-  assert.equal(bodies.length, 3);
+  settings = { ...settings, outputDirectory: "../outside" };
+  await assert.rejects(f.tool.execute({ prompt: "third" }, f.exec), /workspace-write/);
+  assert.equal(requests.length, 2, "sandbox rejection precedes generation");
 });
 
-test("failed or cancelled generation cleans preflight staging without final output", async t => {
-  const f = await toolFixture(t);
-  t.mock.method(globalThis, "fetch", async () => Response.json({ error: { message: "synthetic-access rejected" } }, { status: 403 }));
-  await assert.rejects(f.tool.execute({ prompt: "fixture", provider: "grok" }, f.exec), error => !error.message.includes("synthetic-access"));
-  assert.deepEqual(await readdir(f.cwd), []);
-  t.mock.method(globalThis, "fetch", async () => { f.controller.abort(); throw f.controller.signal.reason; });
-  await assert.rejects(f.tool.execute({ prompt: "fixture", provider: "grok" }, f.exec), { name: "AbortError" });
+test("unsupported route, mismatched response, or adapter failure never silently falls back", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, outputDirectory: "" }));
+  let requests = 0;
+  f.ctx.llm.generateMedia = async options => { requests++; if (requests === 1) return { ...options, provider: "provider-c", bytes: new Uint8Array([1]) }; throw new Error("adapter rejected model"); };
+  await assert.rejects(f.tool.execute({ prompt: "test", provider: "unknown", model: "bad" }, f.exec), /没有注册/);
+  assert.equal(requests, 0);
+  await assert.rejects(f.tool.execute({ prompt: "test" }, f.exec), /不一致/);
+  await assert.rejects(f.tool.execute({ prompt: "test" }, f.exec), /adapter rejected model/);
+  assert.equal(requests, 2);
   assert.deepEqual(await readdir(f.cwd), []);
 });
 
-test("video tool sends saved or explicit model to Grok without fallback", async t => {
-  const bodies = [];
-  let current;
-  t.mock.method(globalThis, "fetch", async (_url, options) => {
-    bodies.push(JSON.parse(options.body));
-    setTimeout(() => current.controller.abort(), 10);
-    return Response.json({ request_id: "video-model-fixture" });
-  });
-  for (const [explicit, expected] of [[undefined, "grok-video-saved"], ["grok-video-requested", "grok-video-requested"]]) {
-    current = await toolFixture(t, "workspace-write", async () => ({ grokVideoModel: "grok-video-saved" }));
-    await assert.rejects(current.tool.execute({ prompt: "fixture", kind: "video", ...(explicit ? { model: explicit } : {}) }, current.exec), { name: "AbortError" });
-    assert.equal(bodies.at(-1).model, expected);
-    assert.deepEqual(await readdir(current.cwd), []);
+test("oversized adapter bytes are rejected and never published", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, outputDirectory: "" }));
+  f.ctx.llm.generateMedia = async options => ({ provider: options.provider, model: options.model, kind: options.kind, bytes: new Uint8Array(MAX_IMAGE_BYTES + 1) });
+  await assert.rejects(f.tool.execute({ prompt: "test" }, f.exec), /超过大小上限/);
+  assert.deepEqual(await readdir(f.cwd), []);
+});
+
+test("image fallback runs once on upstream or media failure and reports the actual route", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, imageFallbackRoute: { provider: "provider-c", model: "override-model" }, outputDirectory: "" }));
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64");
+  const calls = [];
+  f.ctx.llm.generateMedia = async options => { calls.push(options); if (calls.length === 1) { const error = new Error("private upstream body"); error.code = "MEDIA_PROVIDER_ERROR"; throw error; } return { provider: options.provider, model: options.model, kind: options.kind, bytes: png }; };
+  const result = await f.tool.execute({ prompt: "draw" }, f.exec);
+  assert.deepEqual(calls.map(call => [call.provider, call.model]), [["provider-a", "image-model"], ["provider-c", "override-model"]]);
+  assert.notEqual(calls[0].signal, calls[1].signal);
+  assert.equal(result.provider, "provider-c"); assert.equal(result.model, "override-model");
+  calls.length = 0;
+  f.ctx.llm.generateMedia = async options => { calls.push(options); return { provider: options.provider, model: options.model, kind: options.kind, bytes: calls.length === 1 ? Buffer.from('invalid') : png }; };
+  assert.equal((await f.tool.execute({ prompt: "draw" }, f.exec)).provider, "provider-c");
+  assert.equal(calls.length, 2);
+});
+
+test("fallback failure reports both stages without leaking upstream bodies", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, imageFallbackRoute: { provider: "provider-c", model: "override-model" }, outputDirectory: "" }));
+  let calls = 0;
+  f.ctx.llm.generateMedia = async () => { calls++; const error = new Error("secret-url-and-token"); error.code = calls === 1 ? "MEDIA_TRANSPORT" : "INVALID_MEDIA_REQUEST"; throw error; };
+  await assert.rejects(f.tool.execute({ prompt: "draw" }, f.exec), error => /主模型 provider-a\/image-model/.test(error.message) && /兜底模型 provider-c\/override-model/.test(error.message) && /MEDIA_TRANSPORT/.test(error.message) && /INVALID_MEDIA_REQUEST/.test(error.message) && !/secret-url-and-token/.test(error.message));
+  assert.equal(calls, 2);
+});
+
+test("upstream HTTP 400 and 422 may use the explicitly configured fallback", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, imageFallbackRoute: { provider: "provider-c", model: "override-model" }, outputDirectory: "" }));
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64");
+  for (const status of [400, 422]) {
+    const calls = [];
+    f.ctx.llm.generateMedia = async options => { calls.push(options.provider); if (calls.length === 1) { const error = new Error(`media provider returned HTTP ${status}`); error.code = "MEDIA_PROVIDER_ERROR"; throw error; } return { provider: options.provider, model: options.model, kind: options.kind, bytes: png }; };
+    assert.equal((await f.tool.execute({ prompt: "draw" }, f.exec)).provider, "provider-c");
+    assert.deepEqual(calls, ["provider-a", "provider-c"]);
   }
-  assert.equal(bodies.length, 2);
+});
+
+test("route, authentication, and provider catalog failures can use fallback", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, imageFallbackRoute: { provider: "provider-c", model: "override-model" }, outputDirectory: "" }));
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64");
+  for (const code of ["MEDIA_UNSUPPORTED", "MEDIA_ROUTE_CHANGED", "MEDIA_AUTH", "MISSING_CREDENTIAL"]) {
+    const calls = [];
+    f.ctx.llm.generateMedia = async options => { calls.push(options.provider); if (options.provider === "provider-a") { const error = new Error("route unavailable"); error.code = code; throw error; } return { provider: options.provider, model: options.model, kind: options.kind, bytes: png }; };
+    assert.equal((await f.tool.execute({ prompt: "draw" }, f.exec)).provider, "provider-c");
+    assert.deepEqual(calls, ["provider-a", "provider-c"]);
+  }
+  const original = f.ctx.llm.listMediaModels;
+  for (const failure of ["throw", "missing"]) {
+    f.ctx.llm.listMediaModels = async (kind, provider, signal) => { if (provider === "provider-a") { if (failure === "throw") throw new Error("catalog unavailable"); return []; } return original(kind, provider, signal); };
+    f.ctx.llm.generateMedia = async options => ({ provider: options.provider, model: options.model, kind: options.kind, bytes: png });
+    assert.equal((await f.tool.execute({ prompt: "draw" }, f.exec)).provider, "provider-c");
+  }
+});
+
+test("a timed out primary receives one fresh 600-second fallback attempt", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, imageFallbackRoute: { provider: "provider-c", model: "override-model" }, outputDirectory: "" }));
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64");
+  const original = AbortSignal.timeout;
+  let deadlines = 0, calls = 0;
+  try {
+    AbortSignal.timeout = ms => ms === 600_000 && ++deadlines === 1 ? AbortSignal.abort(new DOMException("timed out", "TimeoutError")) : original(ms);
+    f.ctx.llm.generateMedia = async options => { calls++; return { provider: options.provider, model: options.model, kind: options.kind, bytes: png }; };
+    const result = await f.tool.execute({ prompt: "draw" }, f.exec);
+    assert.equal(result.provider, "provider-c"); assert.equal(deadlines, 2); assert.equal(calls, 1);
+  } finally { AbortSignal.timeout = original; }
+});
+
+test("two timed out attempts have independent deadlines and report both failures", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, imageFallbackRoute: { provider: "provider-c", model: "override-model" }, outputDirectory: "" }));
+  const original = AbortSignal.timeout;
+  let deadlines = 0;
+  try {
+    AbortSignal.timeout = ms => ms === 600_000 ? (deadlines++, AbortSignal.abort(new DOMException("timed out", "TimeoutError"))) : original(ms);
+    f.ctx.llm.generateMedia = async () => { throw new Error("timed out before generation"); };
+    await assert.rejects(f.tool.execute({ prompt: "draw" }, f.exec), error => /主模型 provider-a\/image-model：目录超时/.test(error.message) && /兜底模型 provider-c\/override-model：目录超时/.test(error.message));
+    assert.equal(deadlines, 2);
+  } finally { AbortSignal.timeout = original; }
+});
+
+test("a fallback identical to the resolved main route is never called twice", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, imageFallbackRoute: { provider: "provider-a", model: "image-model" }, outputDirectory: "" }));
+  let calls = 0;
+  f.ctx.llm.generateMedia = async () => { calls++; const error = new Error("failed"); error.code = "MEDIA_PROVIDER_ERROR"; throw error; };
+  await assert.rejects(f.tool.execute({ prompt: "draw" }, f.exec), /failed/);
+  assert.equal(calls, 1);
+});
+
+test("invalid input, local denial, and user cancellation never call fallback", async t => {
+  const f = await toolFixture(t, "read-only", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, imageFallbackRoute: { provider: "provider-c", model: "override-model" }, outputDirectory: "" }));
+  let calls = 0;
+  f.ctx.llm.generateMedia = async () => { calls++; };
+  await assert.rejects(f.tool.execute({ prompt: "" }, f.exec), /不能为空/);
+  await assert.rejects(f.tool.execute({ prompt: "draw" }, f.exec), /read-only/);
+  assert.equal(calls, 0);
+  f.state.mode = "workspace-write";
+  f.ctx.llm.generateMedia = async () => { calls++; const error = new Error("bad request"); error.code = "INVALID_MEDIA_REQUEST"; throw error; };
+  await assert.rejects(f.tool.execute({ prompt: "draw" }, f.exec), /bad request/);
+  assert.equal(calls, 1);
+  f.ctx.llm.generateMedia = async options => { calls++; f.controller.abort(); options.signal.throwIfAborted(); };
+  await assert.rejects(f.tool.execute({ prompt: "draw" }, f.exec), { name: "AbortError" });
+  assert.equal(calls, 2);
+});
+
+test("a local publication failure never triggers fallback", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, imageFallbackRoute: { provider: "provider-c", model: "override-model" }, outputDirectory: "" }));
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64");
+  let calls = 0;
+  f.ctx.llm.generateMedia = async options => { calls++; const original = f.ctx.fs.checkedTarget; f.ctx.fs.checkedTarget = async (target, policy) => { if (target.displayPath.endsWith("result.png")) throw new Error("publication denied"); return original(target, policy); }; return { provider: options.provider, model: options.model, kind: options.kind, bytes: png }; };
+  await assert.rejects(f.tool.execute({ prompt: "draw", path: "result.png" }, f.exec), /无需重新生成/);
+  assert.equal(calls, 1);
+});
+
+test("video uses its own exact route and cancellation is propagated", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, videoRoute: { provider: "provider-b", model: "video-model" }, videoDuration: 8, videoResolution: "720p", outputDirectory: "" }));
+  let actual;
+  f.ctx.llm.generateMedia = async options => { actual = options; f.controller.abort(); options.signal.throwIfAborted(); };
+  await assert.rejects(f.tool.execute({ prompt: "video", kind: "video" }, f.exec), { name: "AbortError" });
+  assert.equal(actual.provider, "provider-b");
+  assert.equal(actual.model, "video-model");
+  assert.equal(actual.kind, "video");
+  assert.equal(actual.duration, 8);
+  assert.deepEqual(await readdir(f.cwd), []);
+});
+
+test("video fallback uses its exact DSH route and its bytes are decoded before saving", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ videoRoute: { provider: "provider-b", model: "video-model" }, videoFallbackRoute: { provider: "provider-d", model: "backup-video" }, videoDuration: 5, videoResolution: "720p", outputDirectory: "" }));
+  const { ffmpeg } = await preflightMediaValidation();
+  const bytes = execFileSync(ffmpeg, ["-v", "error", "-f", "lavfi", "-i", "color=c=red:s=16x16:r=5", "-t", "1", "-c:v", "mpeg4", "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1"]);
+  const requests = [];
+  f.ctx.llm.generateMedia = async options => { requests.push(options); if (requests.length === 1) { const error = new Error("upstream"); error.code = "MEDIA_PROVIDER_ERROR"; throw error; } return { provider: options.provider, model: options.model, kind: options.kind, bytes, duration: 1 }; };
+  const result = await f.tool.execute({ kind: "video", prompt: "fixture", path: "result.mp4" }, f.exec);
+  assert.deepEqual(requests.map(item => [item.provider, item.model]), [["provider-b", "video-model"], ["provider-d", "backup-video"]]);
+  assert.equal(result.provider, "provider-d"); assert.equal(result.model, "backup-video");
+  assert.equal(result.duration, 1); assert.deepEqual(await readFile(result.path), bytes);
 });

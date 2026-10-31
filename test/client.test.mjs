@@ -4,7 +4,9 @@ import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 
 const code = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8');
-const defaults = { provider: 'auto', imageAspectRatio: 'auto', imageQuality: 'auto', videoResolution: '720p', videoDuration: 5, outputDirectory: '', grokImageModel: 'grok-imagine-image-2.0', gptImageModel: 'gpt-image-2', grokVideoModel: 'grok-imagine-video-1.5' };
+const legacy = { provider: 'gpt', imageAspectRatio: '3:2', imageQuality: 'medium', videoResolution: '720p', videoDuration: 5, outputDirectory: 'output', grokImageModel: 'old-grok', gptImageModel: 'old-gpt', grokVideoModel: 'old-video' };
+const defaults = { imageRoute: null, videoRoute: null, imageFallbackRoute: null, videoFallbackRoute: null, imageAspectRatio: '3:2', imageQuality: 'medium', videoResolution: '720p', videoDuration: 5, outputDirectory: 'output', legacySettings: legacy };
+const catalog = { groups: [{ id: 'p1', name: 'Provider One', models: [{ id: 'same', name: 'Same', image: 'declared', video: 'unavailable', imageParameters: { aspectRatios: ['1:1', '3:2'], qualities: ['low', 'medium', 'high'] } }, { id: 'video', name: 'Video', image: 'unavailable', video: 'unverified', videoParameters: { resolutions: ['480p', '720p'], duration: { min: 1, max: 15 } } }] }, { id: 'p2', name: 'Provider Two', models: [{ id: 'same', name: 'Same', image: 'unverified', video: 'unavailable', imageParameters: { aspectRatios: ['1:1'], qualities: ['low'] } }] }], failures: [], mediaFailures: [] };
 
 function harness(handler) {
   let plugin, component, tree, dirty = true, cursor = 0;
@@ -14,16 +16,10 @@ function harness(handler) {
     useState(initial) { const i = cursor++; if (!(i in hooks)) hooks[i] = initial; return [hooks[i], value => { hooks[i] = typeof value === 'function' ? value(hooks[i]) : value; dirty = true; }]; },
     useEffect(effect) { const i = cursor++; if (!(i in hooks)) effects.push(() => { hooks[i] = effect(); }); },
   };
-  vm.runInNewContext(code, {
-    window: { __ModuleLoader__: { load(spec) { assert.equal(spec.id, 'shengcheng'); plugin = spec.factory(name => { assert.equal(name, 'react'); return React; }); } } },
-    AbortController,
-    fetch: async (url, options) => {
-      const call = { url, method: options.method, body: options.body && JSON.parse(options.body) };
-      calls.push(call);
-      const body = await handler(call);
-      return { ok: body.ok, status: body.ok ? 200 : 400, json: async () => body };
-    },
-  });
+  vm.runInNewContext(code, { window: { __ModuleLoader__: { load(spec) { plugin = spec.factory(name => { assert.equal(name, 'react'); return React; }); } } }, AbortController, fetch: async (url, options) => {
+    const call = { url, method: options.method ?? 'GET', body: options.body && JSON.parse(options.body) }; calls.push(call);
+    const body = await handler(call); return { ok: body.ok, status: body.ok ? 200 : 503, json: async () => body };
+  } });
   plugin.apply({ slots: { inject(name, callback) { assert.equal(name, 'plugins.bundle.config'); callback(); }, register(options, value) { assert.equal(options.key, 'shengcheng'); component = value; } } });
   function render() { dirty = false; cursor = 0; tree = component(); while (effects.length) effects.shift()(); }
   function nodes(node = tree) { if (!node || typeof node !== 'object') return []; return [node, ...(node.props.children || []).flatMap(nodes)]; }
@@ -31,88 +27,56 @@ function harness(handler) {
   function label(name) { const item = nodes().find(node => node.type === 'label' && text(node).startsWith(name)); assert.ok(item, name); return item.props.children.find(child => child && typeof child === 'object'); }
   function button(name) { const item = nodes().find(node => node.type === 'button' && text(node) === name); assert.ok(item, name); return item; }
   async function settle() { for (let i = 0; i < 5; i++) { if (dirty) render(); await new Promise(resolve => setImmediate(resolve)); } if (dirty) render(); }
-  return { calls, settle, nodes, text: () => text(tree), label, button, async change(name, value) { label(name).props.onChange({ target: { value } }); await settle(); }, async submit() { await nodes().find(node => node.type === 'form').props.onSubmit({ preventDefault() {} }); await settle(); } };
+  return { calls, settle, label, button, text: () => text(tree), async change(name, value) { label(name).props.onChange({ target: { value } }); await settle(); }, async submit() { await nodes().find(node => node.type === 'form').props.onSubmit({ preventDefault() {} }); await settle(); } };
 }
 
-test('loads settings and only saves explicitly edited values', async () => {
-  const app = harness(call => ({ ok: true, settings: call.body?.settings ?? defaults }));
+test('selects DSH provider and model as a pair, and preserves old settings on save', async () => {
+  const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog } : { ok: true, revision: 'revision-1', settings: call.body?.settings ?? defaults });
   await app.settle();
-  assert.equal(app.calls.length, 1);
-  assert.equal(app.calls[0].method, 'GET');
-  assert.equal(app.button('保存设置').props.disabled, true);
-  await app.change('默认图片提供方', 'gpt');
-  await app.change('默认视频时长（秒）', '8');
-  assert.equal(app.calls.length, 1, 'editing must not save');
+  assert.match(app.text(), /旧版模型设置已保留/);
+  assert.match(app.text(), /每次尝试的总超时均为 600 秒/);
+  assert.match(app.text(), /最多约 1200 秒/);
+  const image = app.label('默认图片模型').props.children;
+  assert.equal(image.find(x => x?.props?.value === JSON.stringify(['p2', 'same'])).props.disabled, false);
+  await app.change('默认图片模型', JSON.stringify(['p1', 'same']));
+  await app.change('默认视频模型', JSON.stringify(['p1', 'video']));
+  assert.equal(app.button('保存设置').props.disabled, false);
   await app.submit();
-  assert.deepEqual(app.calls[1], { url: '/api/shengcheng/settings', method: 'POST', body: { settings: { ...defaults, provider: 'gpt', videoDuration: 8 } } });
+  const saved = app.calls.find(call => call.method === 'POST').body.settings;
+  assert.equal(app.calls.find(call => call.method === 'POST').body.revision, 'revision-1');
+  assert.deepEqual(JSON.parse(JSON.stringify(saved.imageRoute)), { provider: 'p1', model: 'same' });
+  assert.deepEqual(JSON.parse(JSON.stringify(saved.videoRoute)), { provider: 'p1', model: 'video' });
+  assert.deepEqual(saved.legacySettings, legacy);
   assert.match(app.text(), /默认设置已保存/);
+});
+
+test('switching routes preserves incompatible defaults and requires correction before saving', async () => {
+  const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog } : { ok: true, settings: defaults });
+  await app.settle();
+  await app.change('默认图片模型', JSON.stringify(['p2', 'same']));
+  assert.match(app.text(), /图片比例、图片质量/);
   assert.equal(app.button('保存设置').props.disabled, true);
-});
-
-test('shows a save error and keeps the unsaved draft', async () => {
-  const app = harness(call => call.method === 'GET' ? { ok: true, settings: defaults } : { ok: false, error: '保存失败' });
-  await app.settle();
-  await app.change('默认保存目录', '/tmp/output');
-  await app.submit();
-  assert.match(app.text(), /保存失败/);
-  assert.equal(app.label('默认保存目录').props.value, '/tmp/output');
-  assert.equal(app.button('保存设置').props.disabled, false);
-});
-
-test('shows and saves a separate model ID for each generation endpoint', async () => {
-  const app = harness(call => ({ ok: true, settings: call.body?.settings ?? defaults }));
-  await app.settle();
-  for (const [label, value] of [['Grok 图片模型 ID', defaults.grokImageModel], ['GPT 图片模型 ID', defaults.gptImageModel], ['Grok 视频模型 ID', defaults.grokVideoModel]]) {
-    assert.equal(app.label(label).props.value, value);
-    assert.equal(app.label(label).props.required, true);
-    assert.equal(app.label(label).props.maxLength, 128);
-  }
-  assert.match(app.text(), /模型是否可用及参数是否受支持由该接口和账号决定/);
-  await app.change('Grok 图片模型 ID', 'custom-image');
-  await app.change('GPT 图片模型 ID', 'custom-gpt-image');
-  await app.change('Grok 视频模型 ID', 'custom-video');
-  await app.submit();
-  assert.deepEqual(app.calls[1].body.settings, { ...defaults, grokImageModel: 'custom-image', gptImageModel: 'custom-gpt-image', grokVideoModel: 'custom-video' });
-});
-
-test('invalid model identifiers are reported without changing saved settings', async () => {
-  const app = harness(call => ({ ok: true, settings: call.body?.settings ?? defaults }));
-  await app.settle();
-  await app.change('Grok 图片模型 ID', 'bad model');
-  assert.equal(app.label('Grok 图片模型 ID').props['aria-invalid'], true);
-  assert.equal(app.button('保存设置').props.disabled, true);
-  assert.match(app.text(), /模型 ID 须以字母或数字开头/);
-  assert.equal(app.calls.length, 1);
-  await app.change('Grok 图片模型 ID', 'org/custom-model:1.2');
-  assert.equal(app.button('保存设置').props.disabled, false);
-});
-
-test('load errors are visible and do not offer an empty form', async () => {
-  const app = harness(() => ({ ok: false, error: '设置不可读取' }));
-  await app.settle();
-  assert.match(app.text(), /设置不可读取/);
-  assert.equal(app.nodes().some(node => node.type === 'form'), false);
-  assert.equal(app.calls.length, 1);
-});
-
-test('provider-specific image options require an explicit correction after switching provider', async () => {
-  const app = harness(call => ({ ok: true, settings: call.body?.settings ?? defaults }));
-  await app.settle();
-  await app.change('默认图片提供方', 'grok');
-  assert.ok(app.label('默认图片比例').props.children.some(item => item?.props?.value === '16:9'));
-  await app.change('默认图片比例', '16:9');
-  await app.change('默认图片提供方', 'gpt');
-  assert.equal(app.label('默认图片比例').props.value, '16:9');
-  assert.equal(app.label('默认图片比例').props['aria-invalid'], true);
-  assert.match(app.text(), /请调整后保存/);
-  assert.equal(app.button('保存设置').props.disabled, true);
-  assert.ok(app.label('默认图片质量').props.children.some(item => item?.props?.value === 'high'));
+  assert.equal(app.label('默认图片比例').props.value, '3:2');
   await app.change('默认图片比例', '1:1');
-  await app.change('默认图片质量', 'high');
-  await app.change('默认图片提供方', 'auto');
-  assert.equal(app.label('默认图片质量').props.value, 'high');
-  assert.equal(app.button('保存设置').props.disabled, true);
-  await app.change('默认图片质量', 'medium');
+  await app.change('默认图片质量', 'low');
   assert.equal(app.button('保存设置').props.disabled, false);
-  assert.equal(app.calls.length, 1);
+});
+
+test('optional fallback restricts defaults to the intersection and rejects the main route itself', async () => {
+  const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog } : { ok: true, revision: 'r1', settings: defaults });
+  await app.settle();
+  await app.change('默认图片模型', JSON.stringify(['p1', 'same']));
+  await app.change('图片兜底模型', JSON.stringify(['p1', 'same']));
+  assert.match(app.text(), /兜底模型与主模型相同/);
+  await app.change('图片兜底模型', JSON.stringify(['p2', 'same']));
+  assert.match(app.text(), /图片比例、图片质量/);
+  await app.change('默认图片比例', '1:1'); await app.change('默认图片质量', 'low');
+  assert.equal(app.button('保存设置').props.disabled, false);
+});
+
+test('failed catalog is visible and does not silently expose an empty successful list', async () => {
+  const app = harness(call => call.url.endsWith('/models') ? { ok: false, error: '模型目录不可用' } : { ok: true, settings: defaults });
+  await app.settle();
+  assert.match(app.text(), /模型目录不可用/);
+  assert.equal(app.label('默认图片模型').props.disabled, true);
 });
