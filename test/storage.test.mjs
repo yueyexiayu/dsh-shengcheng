@@ -273,7 +273,46 @@ test("submission diagnosis is reported without exposing provider errors", async 
   f.ctx.llm.generateMedia = async () => { calls++; throw Object.assign(new Error("private-body"), { code: "MEDIA_JOB_UNCERTAIN", failure: { mediaDiagnostic: "submit_http", status: 503, body: "private-body" } }); };
   await assert.rejects(f.tool.execute({ prompt: "video", kind: "video" }, f.exec), error => /状态未知/.test(error.message) && /HTTP 503/.test(error.message) && !/private-body/.test(error.message));
   await assert.rejects(f.tool.execute({ prompt: "changed", kind: "video", provider: "other", model: "other" }, f.exec), /状态未知/);
-  assert.equal(calls, 2);
+  assert.equal(calls, 3);
+});
+
+test("video submission HTTP 503 switches once to the configured fallback with the same reference image and parameters", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ videoRoute: { provider: "p", model: "main" }, videoFallbackRoute: { provider: "q", model: "backup" }, videoResolution: "480p", videoDuration: 5, outputDirectory: "" }));
+  const reference = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64");
+  await writeFile(join(f.cwd, "reference.png"), reference);
+  const { ffmpeg } = await preflightMediaValidation();
+  const bytes = execFileSync(ffmpeg, ["-v", "error", "-f", "lavfi", "-i", "color=c=red:s=16x16:r=5", "-t", "1", "-c:v", "mpeg4", "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1"]);
+  const calls = [];
+  f.ctx.llm.generateMedia = async options => {
+    calls.push(options);
+    if (options.model === "main") throw Object.assign(new Error("private"), { code: "MEDIA_JOB_UNCERTAIN", failure: { mediaDiagnostic: "submit_http", status: 503 } });
+    return { provider: options.provider, model: options.model, kind: options.kind, bytes };
+  };
+  const result = await f.tool.execute({ kind: "video", prompt: "move", image_path: "reference.png", duration: 3, resolution: "768p", path: "result.mp4" }, f.exec);
+  assert.deepEqual(calls.map(call => [call.provider, call.model, call.duration, call.resolution]), [["p", "main", 3, "768p"], ["q", "backup", 3, "768p"]]);
+  assert.deepEqual(calls.map(call => Buffer.from(call.referenceImage.bytes)), [reference, reference]);
+  assert.deepEqual(calls.map(call => call.referenceImage.mimeType), ["image/png", "image/png"]);
+  assert.equal(result.provider, "q"); assert.equal(result.model, "backup");
+  assert.deepEqual(await readFile(result.path), bytes);
+});
+
+test("503 fallback reports both actual errors without leaking upstream bodies", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ videoRoute: { provider: "p", model: "main" }, videoFallbackRoute: { provider: "q", model: "backup" }, videoResolution: "480p", videoDuration: 3, outputDirectory: "" }));
+  const calls = [];
+  f.ctx.llm.listMediaModels = async (kind, provider) => [{ kind, provider, id: "main", availability: "declared", parameters: { duration: { min: 4, max: 15 } } }];
+  f.ctx.llm.generateMedia = async options => { calls.push(options.model); if (options.model === "main") throw Object.assign(new Error("secret-primary"), { code: "MEDIA_JOB_UNCERTAIN", failure: { mediaDiagnostic: "submit_http", status: 503 } }); throw Object.assign(new Error("secret-backup"), { code: "MEDIA_REFERENCE_UNAVAILABLE" }); };
+  await assert.rejects(f.tool.execute({ kind: "video", prompt: "test" }, f.exec), error => /主模型 p\/main/.test(error.message) && /HTTP 503/.test(error.message) && /已尝试兜底/.test(error.message) && /当前目录声明 4–15 秒/.test(error.message) && /兜底模型 q\/backup/.test(error.message) && /MEDIA_REFERENCE_UNAVAILABLE/.test(error.message) && !/secret/.test(error.message));
+  assert.deepEqual(calls, ["main", "backup"]);
+});
+
+test("video 503 without a distinct fallback and non-503 uncertain errors never attempt another route", async t => {
+  for (const fallback of [null, { provider: "p", model: "main" }, { provider: "q", model: "backup" }]) {
+    const f = await toolFixture(t, "workspace-write", async () => ({ videoRoute: { provider: "p", model: "main" }, videoFallbackRoute: fallback, outputDirectory: "" }));
+    const calls = [];
+    f.ctx.llm.generateMedia = async options => { calls.push(options.model); throw Object.assign(new Error("private"), { code: "MEDIA_JOB_UNCERTAIN", failure: { mediaDiagnostic: "submit_http", status: fallback?.model === "backup" ? 502 : 503 } }); };
+    await assert.rejects(f.tool.execute({ kind: "video", prompt: "test" }, f.exec), /状态未知/);
+    assert.deepEqual(calls, ["main"]);
+  }
 });
 
 test("503 compares the actual video request with only the selected route's declared catalog", async t => {
