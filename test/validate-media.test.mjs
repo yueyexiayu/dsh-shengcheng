@@ -131,7 +131,7 @@ test("cancelling an active validator kills and reaps its child process", async (
   try {
     const marker = join(dir, "pid");
     const binary = join(dir, "slow-validator");
-    await writeFile(binary, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(marker)}, String(process.pid)); setInterval(()=>{},1000);\n`, { mode: 0o700 });
+    await writeFile(binary, `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(marker)}, String(process.pid)); setInterval(()=>{},1000);\n`, { mode: 0o700 });
     const controller = new AbortController();
     const result = validateMedia(png, "image", controller.signal, { ffprobe: binary, ffmpeg: binary });
     const rejection = result.catch(error => error);

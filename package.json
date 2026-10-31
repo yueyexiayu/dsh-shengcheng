@@ -1,12 +1,13 @@
 {
   "name": "shengcheng",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "DSH plugin: generate images with logged-in Grok/GPT accounts, and videos with Grok.",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
+    "./client": "./lib/client.js",
     "./locale/*.json": "./locale/*.json"
   },
   "dependencies": {
@@ -16,6 +17,10 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": ["@deepseek-ai/dsh-client-ui-plugin-manager"]
     }
   }
 }

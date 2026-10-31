@@ -3,7 +3,7 @@
 <h1>shengcheng · Turn ideas into media</h1>
 <p><strong>Generate images with DSH's signed-in accounts, and videos with Grok.</strong></p>
 <p><a href="README.md">简体中文</a> · <strong>English</strong></p>
-<p><a href="package.json">v0.1.2</a> · <a href="LICENSE">MIT</a> · DSH desktop plugin</p>
+<p><a href="package.json">v0.1.3</a> · <a href="LICENSE">MIT</a> · DSH desktop plugin</p>
 <p><a href="#features">Features</a> · <a href="#how-it-works">How it works</a> · <a href="#installation">Installation</a> · <a href="#parameters-and-boundaries">Boundaries</a> · <a href="#development">Development</a></p>
 </div>
 
@@ -29,7 +29,7 @@ A personal desktop-workflow reference, not a drop-in universal configuration. **
 
 The single tool is `shengcheng`: `kind=image` by default or `kind=video`. Grok uses `grok-imagine-image-2.0` / `grok-imagine-video-1.5`; GPT images use `gpt-image-2`. `provider=auto` uses the current Grok/GPT provider, otherwise available Grok, then GPT. GPT video is rejected.
 
-Host-only credentials use `$DSH_HOME/.credentials.yaml` keys `llm-pi-ai/xai` and `llm-pi-ai/openai-codex`; never other CLI auth.json files. Output defaults to session cwd, otherwise Downloads. The actual saved path/format is returned through `shengcheng_result`; old `saved …` compatibility remains for zhanshi.
+Host-only credentials use `$DSH_HOME/.credentials.yaml` keys `llm-pi-ai/xai` and `llm-pi-ai/openai-codex`; never other CLI auth.json files. Without a configured output directory, output defaults to session cwd, otherwise Downloads. The actual saved path/format is returned through `shengcheng_result`; old `saved …` compatibility remains for zhanshi.
 
 ## Installation
 
@@ -50,6 +50,8 @@ pnpm install --frozen-lockfile
 Use the declared pnpm11.7.0 and pinned official `@earendil-works/pi-ai@0.87.1` renewal implementation. Unrelated provider install scripts are disabled in the workspace configuration. Fully quit DSH with ⌘Q, reopen and start a new session; page refresh does not replace loaded Host code. Log into the desired account using OAuth first.
 
 ## Parameters and boundaries
+
+The plugin details page saves defaults for the image provider, aspect ratio and quality, video resolution and duration, and output directory. Videos default to Grok; automatic image settings retain the existing provider defaults. Explicit conversation parameters take precedence, and an explicit file path overrides the default directory. The session's file access policy still applies. Settings are stored in `$DSH_HOME/storages/shengcheng/settings.json`.
 
 - GPT images support exact `1:1 → 1024x1024`, `3:2 → 1536x1024`, `2:3 → 1024x1536` here. Unsupported ratios or conflicting size/ratio fail before the request, without silent reshaping. This is not a claim about all upstream capabilities.
 - Images reject duration/image_path; videos reject quality/size; Grok images reject size and GPT images reject resolution. Irrelevant fields are errors, not silently ignored.
