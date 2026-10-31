@@ -37,7 +37,7 @@ test('selects DSH provider and model as a pair, and preserves old settings on sa
   assert.match(app.text(), /每次尝试的总超时均为 600 秒/);
   assert.match(app.text(), /最多约 1200 秒/);
   const image = app.label('默认图片模型').props.children;
-  assert.equal(image.find(x => x?.props?.value === JSON.stringify(['p2', 'same'])).props.disabled, false);
+  assert.notEqual(image.find(x => x?.props?.value === JSON.stringify(['p2', 'same'])).props.disabled, true);
   await app.change('默认图片模型', JSON.stringify(['p1', 'same']));
   await app.change('默认视频模型', JSON.stringify(['p1', 'video']));
   assert.equal(app.button('保存设置').props.disabled, false);
@@ -91,21 +91,25 @@ test('failed catalog is visible and does not silently expose an empty successful
   assert.equal(app.label('默认图片模型').props.disabled, true);
 });
 
-test('media errors and empty directories are distinct and unknown routes are disabled', async () => {
+test('unknown and unlisted models remain selectable and savable in each selector', async () => {
   const result = { groups: [{ id: 'p', name: 'P', models: [{ id: 'chat', name: 'Chat', image: 'unknown', video: 'unavailable' }] }], failures: [], mediaFailures: [{ provider: 'p', kind: 'image', reason: 'interface_missing', missing: ['listMediaModels', 'generateMedia'] }], mediaEmpty: [{ provider: 'p', kind: 'video' }] };
-  const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog: result } : { ok: true, settings: defaults });
+  const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog: result } : { ok: true, revision: 'r1', settings: call.body?.settings ?? defaults });
   await app.settle();
-  assert.match(app.text(), /Host 缺少媒体接口：listMediaModels、generateMedia/);
-  assert.match(app.text(), /视频：媒体目录为空/);
-  assert.equal(app.label('默认图片模型').props.children.find(x => x?.props?.value === JSON.stringify(['p', 'chat'])).props.disabled, true);
+  assert.match(app.text(), /Host 缺少媒体生成接口/);
+  for (const label of ['默认图片模型', '默认视频模型', '图片兜底模型', '视频兜底模型']) {
+    assert.notEqual(app.label(label).props.children.find(x => x?.props?.value === JSON.stringify(['p', 'chat'])).props.disabled, true);
+  }
+  await app.change('默认图片模型', JSON.stringify(['p', 'chat']));
+  await app.change('默认视频模型', JSON.stringify(['p', 'chat']));
+  assert.equal(app.button('保存设置').props.disabled, false);
+  await app.submit();
+  assert.deepEqual(JSON.parse(JSON.stringify(app.calls.find(call => call.method === 'POST').body.settings.videoRoute)), { provider: 'p', model: 'chat' });
 });
 
-test('shows per-provider call and contract failures without inventing routes', async () => {
+test('media catalog failures do not produce distracting per-provider errors', async () => {
   const result = { groups: [], failures: [], mediaFailures: [{ provider: 'a', kind: 'image', reason: 'call_failed' }, { provider: 'b', kind: 'video', reason: 'invalid_response' }, { provider: 'xai', kind: 'image', reason: 'missing_credential' }, { provider: 'c', kind: 'video', reason: 'catalog_unavailable' }], mediaEmpty: [] };
   const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog: result } : { ok: true, settings: defaults });
   await app.settle();
-  assert.match(app.text(), /a \/ 图片：媒体目录调用失败。能力未知/);
-  assert.match(app.text(), /b \/ 视频：媒体目录返回格式无效。能力未知/);
-  assert.match(app.text(), /xai \/ 图片：媒体 API 凭据不可用。能力未知/);
-  assert.match(app.text(), /c \/ 视频：该提供方的媒体目录尚不可读取。能力未知/);
+  assert.match(app.text(), /可自行选择已配置的模型/);
+  assert.doesNotMatch(app.text(), /媒体目录调用失败|媒体目录返回格式无效|媒体 API 凭据不可用/);
 });

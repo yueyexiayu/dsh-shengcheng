@@ -165,21 +165,9 @@ async function toolFixture(t, mode, getDefaults) {
   const f = await fixture(t, mode);
   let tool;
   f.ctx.tools = { register: value => { tool = value; } };
-  const routes = [
-    { provider: "provider-a", id: "image-model", kind: "image", availability: "unverified" },
-    { provider: "provider-b", id: "video-model", kind: "video", availability: "declared" },
-    { provider: "provider-c", id: "override-model", kind: "image", availability: "declared" },
-    { provider: "provider-d", id: "backup-video", kind: "video", availability: "declared" },
-  ];
-  const catalogSignals = [];
-  f.ctx.llm = { listMediaModels: async (kind, provider, signal) => {
-    assert.ok(signal instanceof AbortSignal);
-    catalogSignals.push(signal);
-    if (provider === undefined) throw new Error("another provider is unavailable");
-    return routes.filter(route => route.kind === kind && route.provider === provider);
-  } };
+  f.ctx.llm = {};
   registerShengchengTools(f.ctx, getDefaults);
-  return { ...f, tool, catalogSignals };
+  return { ...f, tool };
 }
 
 test("Host route selection dispatches the chosen image model and applies explicit overrides", async t => {
@@ -192,7 +180,7 @@ test("Host route selection dispatches the chosen image model and applies explici
   assert.equal(dirname(first.path), join(await realpath(f.cwd), "generated"));
   assert.equal(requests[0].provider, "provider-a");
   assert.equal(requests[0].model, "image-model");
-  assert.equal(requests[0].signal, f.catalogSignals[0]);
+  assert.ok(requests[0].signal instanceof AbortSignal);
   assert.equal(requests[0].aspectRatio, "3:2");
   assert.equal(requests[0].quality, "medium");
   assert.equal(first.provider, "provider-a");
@@ -208,15 +196,27 @@ test("Host route selection dispatches the chosen image model and applies explici
   assert.equal(requests.length, 2, "sandbox rejection precedes generation");
 });
 
+test("user-selected model is sent even when media discovery is unavailable or empty", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "selected-by-user" }, outputDirectory: "" }));
+  const bytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64");
+  let discoveries = 0, dispatched = 0;
+  f.ctx.llm.listMediaModels = async () => { discoveries++; throw new Error("unknown catalog"); };
+  f.ctx.llm.generateMedia = async options => { dispatched++; return { provider: options.provider, model: options.model, kind: options.kind, bytes }; };
+  const result = await f.tool.execute({ prompt: "draw" }, f.exec);
+  assert.equal(result.model, "selected-by-user");
+  assert.equal(discoveries, 0);
+  assert.equal(dispatched, 1);
+});
+
 test("unsupported route, mismatched response, or adapter failure never silently falls back", async t => {
   const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, outputDirectory: "" }));
   let requests = 0;
-  f.ctx.llm.generateMedia = async options => { requests++; if (requests === 1) return { ...options, provider: "provider-c", bytes: new Uint8Array([1]) }; throw new Error("adapter rejected model"); };
-  await assert.rejects(f.tool.execute({ prompt: "test", provider: "unknown", model: "bad" }, f.exec), /目录失败/);
-  assert.equal(requests, 0);
+  f.ctx.llm.generateMedia = async options => { requests++; if (options.provider === "unknown") throw Object.assign(new Error("unsupported"), { code: "MEDIA_UNSUPPORTED" }); if (requests === 2) return { ...options, provider: "provider-c", bytes: new Uint8Array([1]) }; throw new Error("adapter rejected model"); };
+  await assert.rejects(f.tool.execute({ prompt: "test", provider: "unknown", model: "bad" }, f.exec), /上游生成失败 \(MEDIA_UNSUPPORTED\)/);
+  assert.equal(requests, 1);
   await assert.rejects(f.tool.execute({ prompt: "test" }, f.exec), /不一致/);
   await assert.rejects(f.tool.execute({ prompt: "test" }, f.exec), /上游生成失败/);
-  assert.equal(requests, 2);
+  assert.equal(requests, 3);
   assert.deepEqual(await readdir(f.cwd), []);
 });
 
@@ -262,14 +262,9 @@ test("an uncertain upstream job does not start a fallback or leak its details", 
   }
 });
 
-test("single-route adapter and catalog failures do not expose upstream secrets", async t => {
+test("single-route adapter failures do not expose upstream secrets", async t => {
   const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, outputDirectory: "" }));
   const secret = "signed-url-or-token-secret";
-  const original = f.ctx.llm.listMediaModels;
-  f.ctx.llm.generateMedia = async () => { throw new Error("unexpected generation"); };
-  f.ctx.llm.listMediaModels = async () => { throw Object.assign(new Error(secret), { code: "PRIVATE_SECRET" }); };
-  await assert.rejects(f.tool.execute({ prompt: "draw" }, f.exec), error => /目录失败/.test(error.message) && !error.message.includes(secret) && !error.message.includes("PRIVATE_SECRET"));
-  f.ctx.llm.listMediaModels = original;
   for (const code of ["MEDIA_PROVIDER_ERROR", "INVALID_MEDIA_REQUEST", "PRIVATE_SECRET"]) {
     f.ctx.llm.generateMedia = async () => { throw Object.assign(new Error(secret), { code }); };
     await assert.rejects(f.tool.execute({ prompt: "draw" }, f.exec), error => /上游生成失败/.test(error.message) && !error.message.includes(secret) && !error.message.includes("PRIVATE_SECRET"));
@@ -287,7 +282,7 @@ test("upstream HTTP 400 and 422 may use the explicitly configured fallback", asy
   }
 });
 
-test("route, authentication, and provider catalog failures can use fallback", async t => {
+test("route and authentication failures can use fallback", async t => {
   const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, imageFallbackRoute: { provider: "provider-c", model: "override-model" }, outputDirectory: "" }));
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64");
   for (const code of ["MEDIA_UNSUPPORTED", "MEDIA_ROUTE_CHANGED", "MEDIA_AUTH", "MISSING_CREDENTIAL"]) {
@@ -295,12 +290,6 @@ test("route, authentication, and provider catalog failures can use fallback", as
     f.ctx.llm.generateMedia = async options => { calls.push(options.provider); if (options.provider === "provider-a") { const error = new Error("route unavailable"); error.code = code; throw error; } return { provider: options.provider, model: options.model, kind: options.kind, bytes: png }; };
     assert.equal((await f.tool.execute({ prompt: "draw" }, f.exec)).provider, "provider-c");
     assert.deepEqual(calls, ["provider-a", "provider-c"]);
-  }
-  const original = f.ctx.llm.listMediaModels;
-  for (const failure of ["throw", "missing"]) {
-    f.ctx.llm.listMediaModels = async (kind, provider, signal) => { if (provider === "provider-a") { if (failure === "throw") throw new Error("catalog unavailable"); return []; } return original(kind, provider, signal); };
-    f.ctx.llm.generateMedia = async options => ({ provider: options.provider, model: options.model, kind: options.kind, bytes: png });
-    assert.equal((await f.tool.execute({ prompt: "draw" }, f.exec)).provider, "provider-c");
   }
 });
 
@@ -324,7 +313,7 @@ test("two timed out attempts have independent deadlines and report both failures
   try {
     AbortSignal.timeout = ms => ms === 600_000 ? (deadlines++, AbortSignal.abort(new DOMException("timed out", "TimeoutError"))) : original(ms);
     f.ctx.llm.generateMedia = async () => { throw new Error("timed out before generation"); };
-    await assert.rejects(f.tool.execute({ prompt: "draw" }, f.exec), error => /主模型 provider-a\/image-model：目录超时/.test(error.message) && /兜底模型 provider-c\/override-model：目录超时/.test(error.message));
+    await assert.rejects(f.tool.execute({ prompt: "draw" }, f.exec), error => /主模型 provider-a\/image-model：请求准备超时/.test(error.message) && /兜底模型 provider-c\/override-model：请求准备超时/.test(error.message));
     assert.equal(deadlines, 2);
   } finally { AbortSignal.timeout = original; }
 });
@@ -340,7 +329,6 @@ test("local preflight and reference validation timeouts do not use fallback", as
     try {
       AbortSignal.timeout = ms => ms === localDeadline ? AbortSignal.abort(new DOMException("local timeout", "TimeoutError")) : original(ms);
       await assert.rejects(f.tool.execute({ prompt: "draw", image_path: "reference.png" }, f.exec), { name: "TimeoutError" });
-      assert.equal(f.catalogSignals.length, 1);
       assert.equal(calls, 0);
     } finally { AbortSignal.timeout = original; }
   }

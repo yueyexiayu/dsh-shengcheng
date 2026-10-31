@@ -4,11 +4,11 @@ A DSH plugin that generates images or video using model routes configured in DSH
 
 ## Settings
 
-Choose separate default image and video models on the plugin details page, along with the aspect ratio, image quality, video resolution, duration, and output directory. The catalog comes from DSH providers and models. Only routes for which the Host supplies a corresponding media protocol can be selected. “Capability unverified” means the protocol can be attempted; the provider decides whether the model and account support generation. Routes absent from the media catalog are disabled. The page distinguishes missing Host interfaces, failed catalog calls, invalid responses, and empty catalogs; capability is unknown in the first three cases. Save after making changes.
+Choose separate default image and video models on the plugin details page, along with the aspect ratio, image quality, video resolution, duration, and output directory. Choose any model listed in the DSH catalog; the provider and actual invocation determine whether generation succeeds. Save after making changes.
 
-Parameter choices come from the selected route's protocol capabilities. When changing routes, incompatible defaults are retained and must be corrected before saving. Automatic or blank parameters are omitted from the adapter request.
+Parameter choices come from the selected route's known protocol capabilities. When changing routes, defaults known to be incompatible are retained and must be corrected before saving; unknown capabilities do not prevent saving. Automatic or blank parameters are omitted from the adapter request.
 
-Optionally choose one fallback route each for images and video. A catalog timeout, confirmed upstream failure, or invalid media triggers at most one fallback attempt. Cancellation, local permissions, invalid input, and save failures do not trigger another generation. A generation that may still be running does not trigger a fallback, avoiding duplicate generation. If both attempts fail, their failure stages are reported.
+Optionally choose one fallback route each for images and video. A confirmed upstream failure or invalid media triggers at most one fallback attempt. Cancellation, local permissions, invalid input, and save failures do not trigger another generation. A generation that may still be running does not trigger a fallback, avoiding duplicate generation. If both attempts fail, their failure stages are reported.
 
 Parameters explicitly given in a conversation take precedence over these defaults. A provider and model together identify the route; generation only switches to an explicitly configured fallback after an eligible failure. A missing selection prompts the user to choose a model. An empty output directory uses the session working directory, or the downloads directory if there is none.
 
@@ -18,7 +18,7 @@ Hosts sharing the same `DSH_HOME` read the same settings. If another window save
 
 ## Requirements
 
-The DSH Host must provide `listMediaModels` and `generateMedia`, the chosen provider must have an account or credentials configured, and FFmpeg must be available. Supported models and parameters depend on the selected Host adapter and remote service. A chat model or image input capability does not establish generation capability. Generation may incur provider charges.
+The DSH Host must provide `generateMedia`, the chosen provider must have an account or credentials configured, and FFmpeg must be available. Supported models and parameters depend on the selected Host adapter and remote service. A chat model or image input capability does not establish generation capability. Generation may incur provider charges.
 
 The plugin checks output permissions before dispatch, accepts only safe HTTPS download URLs, and validates media with FFmpeg before saving. Failure or cancellation does not overwrite existing files. Reference images are also checked for size and format.
 
@@ -30,4 +30,4 @@ Tests use the Node test runner. Tests involving DSH filesystem permissions requi
 
 For the cross-module integration test, export `DSH_HOST_SOURCE_ROOT` pointing to a DSH source checkout with dependencies installed, then run `"$DSH_HOST_SOURCE_ROOT/node_modules/.bin/vitest" run --config test/host-vitest.config.mjs`. The test reports an error if that variable is missing.
 
-Version: 0.1.8
+Version: 0.1.9
