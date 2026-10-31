@@ -51,3 +51,9 @@ test("a later media-only model inherits the other kind's failed status", async (
   assert.equal(result.groups[0].models[0].image, "unknown");
   assert.equal(result.groups[0].models[0].video, "declared");
 });
+
+test("reports missing media credentials without exposing the adapter error", async () => {
+  const result = await listHostModelCatalog({ listProviders: () => [{ id: "p" }], listModels: () => [], generateMedia() {}, listMediaModels() { throw Object.assign(new Error("secret-value"), { code: "MISSING_CREDENTIAL" }); } });
+  assert.equal(result.mediaFailures[0].reason, "missing_credential");
+  assert.doesNotMatch(JSON.stringify(result), /secret-value/);
+});

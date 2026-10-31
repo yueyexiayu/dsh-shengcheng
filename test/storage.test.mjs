@@ -245,9 +245,21 @@ test("image fallback runs once on upstream or media failure and reports the actu
 test("fallback failure reports both stages without leaking upstream bodies", async t => {
   const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, imageFallbackRoute: { provider: "provider-c", model: "override-model" }, outputDirectory: "" }));
   let calls = 0;
-  f.ctx.llm.generateMedia = async () => { calls++; const error = new Error("secret-url-and-token"); error.code = calls === 1 ? "MEDIA_TRANSPORT" : "INVALID_MEDIA_REQUEST"; throw error; };
-  await assert.rejects(f.tool.execute({ prompt: "draw" }, f.exec), error => /主模型 provider-a\/image-model/.test(error.message) && /兜底模型 provider-c\/override-model/.test(error.message) && /MEDIA_TRANSPORT/.test(error.message) && /INVALID_MEDIA_REQUEST/.test(error.message) && !/secret-url-and-token/.test(error.message));
+  f.ctx.llm.generateMedia = async () => { calls++; const error = new Error("secret-url-and-token"); error.code = calls === 1 ? "MEDIA_PROVIDER_ERROR" : "INVALID_MEDIA_REQUEST"; throw error; };
+  await assert.rejects(f.tool.execute({ prompt: "draw" }, f.exec), error => /主模型 provider-a\/image-model/.test(error.message) && /兜底模型 provider-c\/override-model/.test(error.message) && /MEDIA_PROVIDER_ERROR/.test(error.message) && /INVALID_MEDIA_REQUEST/.test(error.message) && !/secret-url-and-token/.test(error.message));
   assert.equal(calls, 2);
+});
+
+test("an uncertain upstream job does not start a fallback or leak its details", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ videoRoute: { provider: "provider-a", model: "video-model" }, videoFallbackRoute: { provider: "provider-c", model: "video-model" }, outputDirectory: "" }));
+  let calls = 0;
+  f.ctx.llm.listMediaModels = async (kind, provider) => [{ provider, id: "video-model", kind, availability: "declared" }];
+  for (const code of ["MEDIA_JOB_UNCERTAIN", "MEDIA_TRANSPORT", "TimeoutError"]) {
+    calls = 0;
+    f.ctx.llm.generateMedia = async () => { calls++; if (code === "TimeoutError") throw new DOMException("private-job-details", code); throw Object.assign(new Error("private-job-details"), { code }); };
+    await assert.rejects(f.tool.execute({ prompt: "video", kind: "video" }, f.exec), error => /状态未知/.test(error.message) && /未自动切换兜底/.test(error.message) && !error.message.includes("private-job-details"));
+    assert.equal(calls, 1);
+  }
 });
 
 test("single-route adapter and catalog failures do not expose upstream secrets", async t => {

@@ -1,5 +1,5 @@
 // @ts-nocheck -- Cross-repository JavaScript plugin integration fixture.
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
@@ -15,20 +15,23 @@ if (!hostRoot) throw new Error('DSH_HOST_SOURCE_ROOT is required for Host integr
 const hostTestPath = path => pathToFileURL(join(hostRoot, 'packages/llm/llm-pi-ai', path)).href
 const { resolveProfiles } = await import(/* @vite-ignore */ hostTestPath('src/config.ts'))
 const { memoryAuth } = await import(/* @vite-ignore */ hostTestPath('tests/auth-double.ts'))
-const { closeMockServers, mockServer } = await import(/* @vite-ignore */ hostTestPath('tests/mock-server.ts'))
-
-afterEach(async () => { await closeMockServers() })
+afterEach(() => { vi.unstubAllGlobals() })
 
 it('dispatches the plugin selected route through the actual Host and adapter, validates and saves its result', async () => {
   const image = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII='
-  const server = await mockServer([{ body: JSON.stringify({ data: [{ b64_json: image }] }) }, { status: 500, body: '{}' }])
-  const backup = await mockServer([{ body: JSON.stringify({ data: [{ b64_json: image }] }) }, { body: JSON.stringify({ data: [{ b64_json: image }] }) }])
+  const requests = []
+  vi.stubGlobal('fetch', async (url, options) => {
+    requests.push({ url: String(url), method: options.method, headers: options.headers, body: options.body && JSON.parse(options.body) })
+    if (url === 'https://api.openai.com/v1/models' && options.method === 'GET') return Response.json({ data: [{ id: 'gpt-image-2' }, { id: 'ordinary-chat-model' }] })
+    if (url === 'https://api.openai.com/v1/images/generations' && options.method === 'POST') return Response.json({ data: [{ b64_json: image }] })
+    throw new Error('unexpected network call')
+  })
   const root = await mkdtemp(join(tmpdir(), 'shengcheng-host-integration-'))
   const cwd = join(root, 'workspace'); await mkdir(cwd)
   const host = new Context(); await host.plugin(LlmRuntime)
-  const profiles = resolveProfiles({ local: { api: 'openai-completions', baseURL: `${server.url}/v1`, apiKeyEnv: 'FAKE_KEY', models: [{ id: 'selected-image', name: 'Selected image' }] }, backup: { api: 'openai-completions', baseURL: `${backup.url}/v1`, apiKeyEnv: 'FAKE_KEY', models: [{ id: 'backup-image', name: 'Backup image' }] } })
+  const profiles = resolveProfiles({ openai: { apiKeyEnv: 'FAKE_KEY' } })
   const adapter = new PiAiAdapter({ profiles: () => profiles, resolveApiKey: () => Promise.resolve('fake-key'), auth: memoryAuth() })
-  const dispose = host.llm.registerAdapter(['local', 'backup'], adapter)
+  const dispose = host.llm.registerAdapter(['openai'], adapter)
   const canonical = async path => { try { return await realpath(path) } catch (error) { if (error.code !== 'ENOENT') throw error; return join(await canonical(dirname(path)), path.slice(dirname(path).length + 1)) } }
   let tool
   const ctx = {
@@ -48,26 +51,51 @@ it('dispatches the plugin selected route through the actual Host and adapter, va
   }
   try {
     const catalog = await listHostModelCatalog(host.llm)
-    const model = catalog.groups.find(group => group.id === 'local').models.find(entry => entry.id === 'selected-image')
-    expect(model.imageParameters.aspectRatios).toContain('3:2')
-    expect(model.imageParameters.aspectRatios).not.toContain('16:9')
-    registerShengchengTools(ctx, async () => ({ imageRoute: { provider: 'local', model: 'selected-image' }, imageFallbackRoute: { provider: 'backup', model: 'backup-image' }, outputDirectory: '' }))
+    const group = catalog.groups.find(group => group.id === 'openai')
+    const model = group.models.find(entry => entry.id === 'gpt-image-2')
+    expect(model.image).toBe('unverified')
+    expect(model.video).toBe('unavailable')
+    expect(group.models.find(entry => entry.id === 'ordinary-chat-model')?.image).not.toBe('declared')
+    expect(catalog.mediaFailures).toEqual([])
+    registerShengchengTools(ctx, async () => ({ imageRoute: { provider: 'openai', model: 'gpt-image-2' }, outputDirectory: '' }))
     const exec = { agent: { session: { header: { cwd } } }, signal: new AbortController().signal }
     const result = await tool.execute({ prompt: 'draw a fixture', path: 'result.png' }, exec)
-    expect(server.paths).toEqual(['/v1/images/generations'])
-    expect(server.requests).toEqual([{ model: 'selected-image', prompt: 'draw a fixture', n: 1 }])
-    expect(server.headers[0].authorization).toBe('Bearer fake-key')
+    const posts = requests.filter(item => item.method === 'POST')
+    expect(posts.map(item => item.url)).toEqual(['https://api.openai.com/v1/images/generations'])
+    expect(posts[0].body).toEqual({ model: 'gpt-image-2', prompt: 'draw a fixture', n: 1 })
+    expect(posts[0].headers.authorization).toBe('Bearer fake-key')
+    expect(result.provider).toBe('openai')
+    expect(result.model).toBe('gpt-image-2')
     expect(await readFile(result.path)).toEqual(Buffer.from(image, 'base64'))
-    const recovered = await tool.execute({ prompt: 'retry fixture', path: 'fallback.png' }, exec)
-    expect(recovered.provider).toBe('backup')
-    expect(recovered.model).toBe('backup-image')
-    expect(backup.requests).toEqual([{ model: 'backup-image', prompt: 'retry fixture', n: 1 }])
-    expect(await readFile(recovered.path)).toEqual(Buffer.from(image, 'base64'))
-    const missingRoute = await tool.execute({ prompt: 'bad', provider: 'local', model: 'missing' }, exec)
-    expect(missingRoute.provider).toBe('backup')
-    expect(missingRoute.model).toBe('backup-image')
+    await expect(tool.execute({ prompt: 'bad', provider: 'openai', model: 'ordinary-chat-model' }, exec)).rejects.toThrow(/目录失败/)
     await expect(tool.execute({ prompt: 'denied', path: '../escape.png' }, exec)).rejects.toThrow(/workspace-write/)
-    expect(server.paths).toHaveLength(2)
-    expect(backup.paths).toHaveLength(2)
+    expect(requests.filter(item => item.method === 'POST')).toHaveLength(1)
   } finally { dispose(); await host.fiber.dispose(); await rm(root, { recursive: true, force: true }) }
+}, 20000)
+
+it('exposes only declared xAI video routes and dispatches the selected asynchronous job', async () => {
+  const requests = []
+  vi.stubGlobal('fetch', async (url, options) => {
+    requests.push({ url: String(url), method: options.method, body: options.body && JSON.parse(options.body) })
+    if (url === 'https://api.x.ai/v1/image-generation-models') return Response.json({ models: [] })
+    if (url === 'https://api.x.ai/v1/video-generation-models') return Response.json({ models: [{ id: 'grok-imagine-video-1.5' }] })
+    if (url === 'https://api.x.ai/v1/videos/generations') return Response.json({ request_id: 'fixture-job' })
+    if (url === 'https://api.x.ai/v1/videos/fixture-job') return Response.json({ status: 'done', model: 'grok-imagine-video-1.5', video: { url: 'https://video.example/result.mp4', duration: 5 } })
+    throw new Error('unexpected network call')
+  })
+  const host = new Context(); await host.plugin(LlmRuntime)
+  const profiles = resolveProfiles({ xai: { apiKeyEnv: 'FAKE_KEY' } })
+  const adapter = new PiAiAdapter({ profiles: () => profiles, resolveApiKey: () => Promise.resolve('fake-key'), auth: memoryAuth() })
+  const dispose = host.llm.registerAdapter(['xai'], adapter)
+  try {
+    const catalog = await listHostModelCatalog(host.llm)
+    const route = catalog.groups.find(group => group.id === 'xai').models.find(model => model.id === 'grok-imagine-video-1.5')
+    expect(route.video).toBe('declared')
+    expect(route.videoParameters.duration).toEqual({ min: 1, max: 15 })
+    expect(route.image).toBe('unavailable')
+    const result = await host.llm.generateMedia({ provider: 'xai', model: route.id, kind: 'video', prompt: 'move', duration: 5 })
+    expect(result).toEqual({ provider: 'xai', model: route.id, kind: 'video', url: 'https://video.example/result.mp4', duration: 5 })
+    expect(requests.filter(item => item.method === 'POST')).toEqual([{ url: 'https://api.x.ai/v1/videos/generations', method: 'POST', body: { model: route.id, prompt: 'move', duration: 5 } }])
+    expect(requests.some(item => item.url === 'https://api.x.ai/v1/videos/fixture-job')).toBe(true)
+  } finally { dispose(); await host.fiber.dispose() }
 }, 20000)

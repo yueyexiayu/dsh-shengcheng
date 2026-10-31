@@ -101,9 +101,10 @@ test('media errors and empty directories are distinct and unknown routes are dis
 });
 
 test('shows per-provider call and contract failures without inventing routes', async () => {
-  const result = { groups: [], failures: [], mediaFailures: [{ provider: 'a', kind: 'image', reason: 'call_failed' }, { provider: 'b', kind: 'video', reason: 'invalid_response' }], mediaEmpty: [] };
+  const result = { groups: [], failures: [], mediaFailures: [{ provider: 'a', kind: 'image', reason: 'call_failed' }, { provider: 'b', kind: 'video', reason: 'invalid_response' }, { provider: 'xai', kind: 'image', reason: 'missing_credential' }], mediaEmpty: [] };
   const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog: result } : { ok: true, settings: defaults });
   await app.settle();
   assert.match(app.text(), /a \/ 图片：媒体目录调用失败。能力未知/);
   assert.match(app.text(), /b \/ 视频：媒体目录返回格式无效。能力未知/);
+  assert.match(app.text(), /xai \/ 图片：媒体 API 凭据不可用。能力未知/);
 });
