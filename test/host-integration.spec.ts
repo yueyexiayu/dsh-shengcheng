@@ -7,7 +7,7 @@ import { registerShengchengTools } from '../lib/tools.js'
 import { listHostModelCatalog } from '../lib/model-catalog.js'
 import { preflightMediaValidation } from '../lib/validate-media.js'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, mkdir, readFile, realpath, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve, relative, isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -23,7 +23,7 @@ it('uses the configured provider metadata, submits its selected video and safely
   const { ffmpeg } = await preflightMediaValidation()
   const video = execFileSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=16x16:r=5', '-t', '1', '-c:v', 'mpeg4', '-movflags', 'frag_keyframe+empty_moov', '-f', 'mp4', 'pipe:1'])
   const requests = []
-  const directory = { schema_version: 3, models: [{ id: 'video-a', category: 'videos', method: 'POST', path: '/v1/videos', query_path: '/v1/videos/{task_id}', content_path: '/v1/videos/{task_id}/content', parameters: { model: { required: true }, prompt: { required: true }, seconds: { minimum: 2, maximum: 10 }, resolution: { listed_values: ['720P'] } } }] }
+  const directory = { schema_version: 3, models: [{ id: 'video-a', category: 'videos', method: 'POST', path: '/v1/videos', query_path: '/v1/videos/{task_id}', content_path: '/v1/videos/{task_id}/content', parameters: { model: { required: true }, prompt: { required: true }, seconds: { minimum: 2, maximum: 10 }, resolution: { listed_values: ['768P'] }, content: { items: { properties: { type: { listed_values: ['image_url'] }, role: { listed_values: ['first_frame'] }, image_url: { properties: { url: { type: 'string' } } } } } } } }] }
   vi.stubGlobal('fetch', async (url, options) => {
     const headers = new Headers(options.headers)
     requests.push({ url: String(url), method: options.method, authorization: headers.get('authorization'), body: options.body && JSON.parse(options.body) })
@@ -36,6 +36,8 @@ it('uses the configured provider metadata, submits its selected video and safely
   })
   const root = await mkdtemp(join(tmpdir(), 'shengcheng-host-integration-'))
   const cwd = join(root, 'workspace'); await mkdir(cwd)
+  const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', 'base64')
+  await writeFile(join(cwd, 'reference.png'), image)
   const host = new Context(); await host.plugin(LlmRuntime)
   const profiles = resolveProfiles({ custom: { api: 'openai-completions', baseURL: 'https://provider.example/v1', apiKeyEnv: 'FAKE_KEY', models: [{ id: 'video-a', name: 'Video A' }, { id: 'chat-only', name: 'Chat only' }] } })
   const adapter = new PiAiAdapter({ profiles: () => profiles, resolveApiKey: () => Promise.resolve('fake-key'), auth: memoryAuth() })
@@ -49,6 +51,8 @@ it('uses the configured provider metadata, submits its selected video and safely
     fs: {
       resolve: async (path, options) => ({ displayPath: resolve(options?.cwd || cwd, path), targetKey: await canonical(resolve(options?.cwd || cwd, path)) }),
       processPath: target => target.targetKey,
+      stat: async target => { const info = await stat(target.targetKey); return { type: info.isFile() ? 'file' : 'directory', size: info.size } },
+      readBytes: async target => readFile(target.targetKey),
       checkedTarget: async (target, policy) => {
         const targetKey = await canonical(target.displayPath)
         const rel = relative(await realpath(policy.workspaceRoot), targetKey)
@@ -60,19 +64,24 @@ it('uses the configured provider metadata, submits its selected video and safely
   try {
     const catalog = await listHostModelCatalog(host.llm)
     const group = catalog.groups.find(group => group.id === 'custom')
-    expect(group.models.find(model => model.id === 'video-a')).toMatchObject({ video: 'unverified', image: 'unavailable', videoParameters: { duration: { min: 2, max: 10 }, resolutions: ['720p'] } })
+    expect(group.models.find(model => model.id === 'video-a')).toMatchObject({ video: 'unverified', image: 'unavailable', videoParameters: { duration: { min: 2, max: 10 }, resolutions: ['768p'] } })
     expect(group.models.find(model => model.id === 'chat-only').video).toBe('unavailable')
     expect(catalog.mediaFailures).toEqual([])
     registerShengchengTools(ctx, async () => ({ videoRoute: { provider: 'custom', model: 'video-a' }, videoResolution: '720p', videoDuration: 5, outputDirectory: '' }))
     const exec = { agent: { session: { header: { cwd } } }, signal: new AbortController().signal }
-    const result = await tool.execute({ kind: 'video', prompt: 'move fixture', path: 'result.mp4' }, exec)
+    const result = await tool.execute({ kind: 'video', prompt: 'move fixture', image_path: 'reference.png', path: 'result.mp4' }, exec)
     expect(result).toMatchObject({ provider: 'custom', model: 'video-a', kind: 'video' })
     expect(await readFile(result.path)).toEqual(video)
-    expect(requests.find(item => item.method === 'POST')).toMatchObject({ url: 'https://provider.example/v1/videos', authorization: 'Bearer fake-key', body: { model: 'video-a', prompt: 'move fixture', seconds: 5, resolution: '720P' } })
+    expect(result.resolutionNotice).toMatch(/720p/)
+    expect(requests.find(item => item.method === 'POST')).toMatchObject({ url: 'https://provider.example/v1/videos', authorization: 'Bearer fake-key', body: { model: 'video-a', prompt: 'move fixture', seconds: 5, content: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${image.toString('base64')}` }, role: 'first_frame' }] } })
+    expect(requests.find(item => item.method === 'POST').body).not.toHaveProperty('resolution')
+    const explicit = await tool.execute({ kind: 'video', prompt: 'explicit resolution', resolution: '768p', path: 'explicit.mp4' }, exec)
+    expect(await readFile(explicit.path)).toEqual(video)
+    expect(requests.filter(item => item.method === 'POST')[1].body.resolution).toBe('768P')
     expect(requests.find(item => item.url.endsWith('/content')).authorization).toBe('Bearer fake-key')
     expect(requests.filter(item => item.url.endsWith('/docs-data/models.json')).every(item => !item.authorization)).toBe(true)
     await expect(tool.execute({ kind: 'video', prompt: 'bad', provider: 'custom', model: 'chat-only' }, exec)).rejects.toThrow(/上游生成失败/)
     await expect(tool.execute({ kind: 'video', prompt: 'denied', path: '../escape.mp4' }, exec)).rejects.toThrow(/workspace-write/)
-    expect(requests.filter(item => item.method === 'POST').map(item => item.body.model)).toEqual(['video-a', 'chat-only'])
+    expect(requests.filter(item => item.method === 'POST').map(item => item.body.model)).toEqual(['video-a', 'video-a', 'chat-only'])
   } finally { dispose(); await host.fiber.dispose(); await rm(root, { recursive: true, force: true }) }
-}, 40000)
+}, 60000)

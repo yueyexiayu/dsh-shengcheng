@@ -103,6 +103,19 @@ test('common options remain available without metadata and include extra provide
   assert.equal(saved.imageAspectRatio, '16:9'); assert.equal(saved.imageQuality, 'high'); assert.equal(saved.videoResolution, '1080p');
 });
 
+test('incompatible saved resolution is explained without changing it or blocking save', async () => {
+  const result = { groups: [{ id: 'p', name: 'P', models: [{ id: 'v', name: 'V', video: 'declared', videoParameters: { resolutions: ['768P'] } }] }], failures: [], mediaFailures: [], mediaEmpty: [] };
+  const settings = { ...defaults, videoRoute: { provider: 'p', model: 'v' }, videoResolution: '480p' };
+  const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog: result } : { ok: true, revision: 'r', settings: call.body?.settings ?? settings });
+  await app.settle();
+  assert.match(app.text(), /默认视频分辨率不在主模型的已知参数中/);
+  assert.equal(app.label('默认视频分辨率').props.value, '480p');
+  await app.change('默认视频时长', '6');
+  assert.equal(app.button('保存设置').props.disabled, false);
+  await app.submit();
+  assert.equal(app.calls.find(call => call.method === 'POST').body.settings.videoResolution, '480p');
+});
+
 test('failed catalog is visible and does not silently expose an empty successful list', async () => {
   const app = harness(call => call.url.endsWith('/models') ? { ok: false, error: '模型目录不可用' } : { ok: true, settings: defaults });
   await app.settle();

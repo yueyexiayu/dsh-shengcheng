@@ -266,6 +266,14 @@ test("an uncertain upstream job does not start a fallback or leak its details", 
   }
 });
 
+test("unknown reference image input is reported and never silently falls back", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ videoRoute: { provider: "p", model: "main" }, videoFallbackRoute: { provider: "p", model: "backup" }, outputDirectory: "" }));
+  let calls = 0;
+  f.ctx.llm.generateMedia = async () => { calls++; throw Object.assign(new Error("private details"), { code: "MEDIA_REFERENCE_UNAVAILABLE" }); };
+  await assert.rejects(f.tool.execute({ kind: "video", prompt: "fixture" }, f.exec), error => /无法确认所选提供方的参考图输入方式/.test(error.message) && /尚未提交生成请求/.test(error.message) && !error.message.includes("private details"));
+  assert.equal(calls, 1);
+});
+
 test("single-route adapter failures do not expose upstream secrets", async t => {
   const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, outputDirectory: "" }));
   const secret = "signed-url-or-token-secret";
@@ -394,4 +402,36 @@ test("video fallback uses its exact DSH route and its bytes are decoded before s
   assert.deepEqual(requests.map(item => [item.resolution, item.duration]), [["1080p", 3], ["1080p", 3]], "conversation parameters take precedence on both attempts");
   assert.equal(result.provider, "provider-d"); assert.equal(result.model, "backup-video");
   assert.equal(result.duration, 1); assert.deepEqual(await readFile(result.path), bytes);
+});
+
+test("saved resolution adapts per route while explicit resolution and unknown catalogs are preserved", async t => {
+  const settings = { videoRoute: { provider: "p", model: "main" }, videoFallbackRoute: { provider: "p", model: "backup" }, videoDuration: 5, videoResolution: "480p", outputDirectory: "" };
+  const f = await toolFixture(t, "workspace-write", async () => settings);
+  const { ffmpeg } = await preflightMediaValidation();
+  const bytes = execFileSync(ffmpeg, ["-v", "error", "-f", "lavfi", "-i", "color=c=red:s=16x16:r=5", "-t", "1", "-c:v", "mpeg4", "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1"]);
+  const calls = [];
+  f.ctx.llm.listMediaModels = async (kind, provider) => [
+    { provider, kind, id: "main", availability: "declared", parameters: { resolutions: ["768P"] } },
+    { provider, kind, id: "backup", availability: "declared", parameters: { resolutions: ["480P"] } },
+  ];
+  f.ctx.llm.generateMedia = async options => { calls.push(options); if (options.model === "main") throw Object.assign(new Error("failure"), { code: "MEDIA_PROVIDER_ERROR" }); return { ...options, bytes }; };
+  const recovered = await f.tool.execute({ kind: "video", prompt: "fixture", path: "fallback.mp4" }, f.exec);
+  assert.deepEqual(calls.map(item => item.resolution), [undefined, "480p"]);
+  assert.equal(recovered.provider, "p");
+  assert.equal(recovered.model, "backup");
+  assert.match(recovered.resolutionNotice, /主模型：.*480p.*提供方自动选择/);
+  assert.equal(settings.videoResolution, "480p");
+  calls.length = 0;
+  f.ctx.llm.generateMedia = async options => { calls.push(options); return { ...options, bytes }; };
+  const adjusted = await f.tool.execute({ kind: "video", prompt: "fixture", path: "auto.mp4" }, f.exec);
+  assert.equal(calls[0].resolution, undefined);
+  assert.match(adjusted.resolutionNotice, /480p.*提供方自动选择/);
+  assert.match(f.tool.output.render({}, adjusted)[0].text, /480p.*提供方自动选择/);
+  calls.length = 0;
+  await f.tool.execute({ kind: "video", prompt: "fixture", resolution: "480p", path: "explicit.mp4" }, f.exec);
+  assert.equal(calls[0].resolution, "480p");
+  calls.length = 0;
+  f.ctx.llm.listMediaModels = async () => { throw new Error("unavailable"); };
+  await f.tool.execute({ kind: "video", prompt: "fixture", path: "unknown.mp4" }, f.exec);
+  assert.equal(calls[0].resolution, "480p");
 });
