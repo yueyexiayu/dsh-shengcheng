@@ -1,12 +1,13 @@
 {
   "name": "shengcheng",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "DSH plugin: generate images with logged-in Grok/GPT accounts, and videos with Grok.",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
-    ".": "./lib/index.js"
+    ".": "./lib/index.js",
+    "./locale/*.json": "./locale/*.json"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.87.1"
