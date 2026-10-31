@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 
 const code = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8');
-const defaults = { provider: 'auto', imageAspectRatio: 'auto', imageQuality: 'auto', videoResolution: '720p', videoDuration: 5, outputDirectory: '' };
+const defaults = { provider: 'auto', imageAspectRatio: 'auto', imageQuality: 'auto', videoResolution: '720p', videoDuration: 5, outputDirectory: '', grokImageModel: 'grok-imagine-image-2.0', gptImageModel: 'gpt-image-2', grokVideoModel: 'grok-imagine-video-1.5' };
 
 function harness(handler) {
   let plugin, component, tree, dirty = true, cursor = 0;
@@ -56,6 +56,34 @@ test('shows a save error and keeps the unsaved draft', async () => {
   await app.submit();
   assert.match(app.text(), /保存失败/);
   assert.equal(app.label('默认保存目录').props.value, '/tmp/output');
+  assert.equal(app.button('保存设置').props.disabled, false);
+});
+
+test('shows and saves a separate model ID for each generation endpoint', async () => {
+  const app = harness(call => ({ ok: true, settings: call.body?.settings ?? defaults }));
+  await app.settle();
+  for (const [label, value] of [['Grok 图片模型 ID', defaults.grokImageModel], ['GPT 图片模型 ID', defaults.gptImageModel], ['Grok 视频模型 ID', defaults.grokVideoModel]]) {
+    assert.equal(app.label(label).props.value, value);
+    assert.equal(app.label(label).props.required, true);
+    assert.equal(app.label(label).props.maxLength, 128);
+  }
+  assert.match(app.text(), /模型是否可用及参数是否受支持由该接口和账号决定/);
+  await app.change('Grok 图片模型 ID', 'custom-image');
+  await app.change('GPT 图片模型 ID', 'custom-gpt-image');
+  await app.change('Grok 视频模型 ID', 'custom-video');
+  await app.submit();
+  assert.deepEqual(app.calls[1].body.settings, { ...defaults, grokImageModel: 'custom-image', gptImageModel: 'custom-gpt-image', grokVideoModel: 'custom-video' });
+});
+
+test('invalid model identifiers are reported without changing saved settings', async () => {
+  const app = harness(call => ({ ok: true, settings: call.body?.settings ?? defaults }));
+  await app.settle();
+  await app.change('Grok 图片模型 ID', 'bad model');
+  assert.equal(app.label('Grok 图片模型 ID').props['aria-invalid'], true);
+  assert.equal(app.button('保存设置').props.disabled, true);
+  assert.match(app.text(), /模型 ID 须以字母或数字开头/);
+  assert.equal(app.calls.length, 1);
+  await app.change('Grok 图片模型 ID', 'org/custom-model:1.2');
   assert.equal(app.button('保存设置').props.disabled, false);
 });
 

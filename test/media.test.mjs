@@ -4,8 +4,13 @@ import { writeFile, open } from "node:fs/promises";
 import { join } from "node:path";
 import { officialFixture } from "./official-fixture.mjs";
 import { execFileSync } from "node:child_process";
+import https from "node:https";
+import dns from "node:dns/promises";
+import { EventEmitter } from "node:events";
+import { Readable } from "node:stream";
 import { generateImage, generateVideo, readReferenceImage } from "../lib/media.js";
 import { MAX_REF_BYTES } from "../lib/parse.js";
+import { preflightMediaValidation } from "../lib/validate-media.js";
 
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64");
 const ctx = { credentials: { readRecord: async () => ({ kind: "grant", payload: {
@@ -29,6 +34,29 @@ test("Grok and GPT base64 responses are fully decoded before delivery", async t 
   }
   assert.equal(calls.length, 2);
   assert.equal(JSON.parse(calls[1].options.body).size, "1536x1024");
+});
+
+test("configured image model is sent unchanged for each provider and returned", async t => {
+  const bodies = [];
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    bodies.push(JSON.parse(options.body));
+    return Response.json({ data: [{ b64_json: png.toString("base64") }] });
+  });
+  for (const [provider, model] of [["grok", "grok-image-custom-4"], ["gpt", "gpt-image-custom-5"]]) {
+    const result = await generateImage(ctx, { provider, prompt: "fixture", model });
+    assert.equal(result.model, model);
+    assert.equal(bodies.at(-1).model, model);
+  }
+});
+
+test("unsupported model failure is not silently retried with a different model", async t => {
+  const bodies = [];
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    bodies.push(JSON.parse(options.body));
+    return Response.json({ error: { message: "unknown model" } }, { status: 400 });
+  });
+  await assert.rejects(generateImage(ctx, { provider: "grok", prompt: "fixture", model: "unsupported-model" }));
+  assert.deepEqual(bodies.map(body => body.model), ["unsupported-model"]);
 });
 
 test("base64 non-image and signature-only images fail for both providers", async t => {
@@ -86,14 +114,43 @@ test("cancelled reference read never opens the requested path", async () => {
 
 test("video polling can be cancelled during its wait without additional requests", async t => {
   const controller = new AbortController();
-  let calls = 0;
-  t.mock.method(globalThis, "fetch", async () => {
-    calls++;
+  const bodies = [];
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    bodies.push(JSON.parse(options.body));
     setTimeout(() => controller.abort(), 10);
     return Response.json({ request_id: "fixture-request" });
   });
   const before = Date.now();
-  await assert.rejects(generateVideo(ctx, { prompt: "fixture", signal: controller.signal }), { name: "AbortError" });
+  await assert.rejects(generateVideo(ctx, { prompt: "fixture", model: "grok-video-custom-4", signal: controller.signal }), { name: "AbortError" });
   assert.ok(Date.now() - before < 2000);
-  assert.equal(calls, 1);
+  assert.equal(bodies.length, 1);
+  assert.equal(bodies[0].model, "grok-video-custom-4");
+});
+
+test("completed video returns the model used in its creation request", async t => {
+  const { ffmpeg } = await preflightMediaValidation();
+  const video = execFileSync(ffmpeg, ["-v", "error", "-f", "lavfi", "-i", "color=c=red:s=16x16:r=5", "-t", "1", "-c:v", "mpeg4", "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1"], { maxBuffer: 2 * 1024 * 1024 });
+  const requests = [];
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    requests.push({ url: String(url), method: options.method ?? "GET", body: options.body && JSON.parse(options.body) });
+    return options.method === "POST" ? Response.json({ request_id: "video-model-fixture" })
+      : Response.json({ status: "done", video: { url: "https://cdn.example/fixture.mp4", duration: 1 } });
+  });
+  t.mock.method(dns, "lookup", async () => [{ address: "93.184.216.34", family: 4 }]);
+  t.mock.method(https, "request", (_url, _options, callback) => {
+    const request = new EventEmitter();
+    request.end = () => queueMicrotask(() => {
+      const response = Readable.from([video]);
+      response.statusCode = 200;
+      response.headers = { "content-type": "video/mp4" };
+      callback(response);
+    });
+    return request;
+  });
+  const result = await generateVideo(ctx, { prompt: "fixture", model: "grok-video-configured" });
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].body.model, "grok-video-configured");
+  assert.equal(result.model, requests[0].body.model);
+  assert.equal(result.duration, 1);
+  assert.deepEqual(result.bytes, video);
 });

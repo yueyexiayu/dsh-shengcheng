@@ -203,7 +203,7 @@ test("full tool saves decoded media through checked filesystem and renders lossl
 });
 
 test("tool reads saved defaults per request, applies explicit overrides, and checks the default directory", async t => {
-  let defaults = { provider: "grok", imageAspectRatio: "3:2", imageQuality: "medium", outputDirectory: "generated" };
+  let defaults = { provider: "grok", grokImageModel: "grok-image-custom", gptImageModel: "gpt-image-custom", imageAspectRatio: "3:2", imageQuality: "medium", outputDirectory: "generated" };
   const f = await toolFixture(t, "workspace-write", async () => defaults);
   const bytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64");
   const bodies = [];
@@ -215,14 +215,22 @@ test("tool reads saved defaults per request, applies explicit overrides, and che
   assert.equal(dirname(first.path), join(await realpath(f.cwd), "generated"));
   assert.equal(bodies[0].aspect_ratio, "3:2");
   assert.equal(bodies[0].quality, "medium");
+  assert.equal(bodies[0].model, "grok-image-custom");
+  assert.equal(first.model, "grok-image-custom");
   defaults = { ...defaults, imageAspectRatio: "2:3", imageQuality: "low" };
-  const second = await f.tool.execute({ prompt: "second", aspect_ratio: "1:1", quality: "auto", path: "explicit.png" }, f.exec);
+  const second = await f.tool.execute({ prompt: "second", model: "grok-image-override", aspect_ratio: "1:1", quality: "auto", path: "explicit.png" }, f.exec);
   assert.equal(second.path, join(await realpath(f.cwd), "explicit.png"));
   assert.equal(bodies[1].aspect_ratio, "1:1");
   assert.equal(bodies[1].quality, "auto");
+  assert.equal(bodies[1].model, "grok-image-override");
+  assert.equal(second.model, "grok-image-override");
+  const gpt = await f.tool.execute({ prompt: "third", provider: "gpt", path: "gpt.png" }, f.exec);
+  assert.equal(bodies[2].model, "gpt-image-custom");
+  assert.equal(gpt.model, "gpt-image-custom");
   defaults = { ...defaults, outputDirectory: "../outside" };
-  await assert.rejects(f.tool.execute({ prompt: "third" }, f.exec), /workspace-write/);
-  assert.equal(bodies.length, 2);
+  await assert.rejects(f.tool.execute({ prompt: "fourth" }, f.exec), /workspace-write/);
+  await assert.rejects(f.tool.execute({ prompt: "fifth", model: "not a model" }, f.exec), /模型 ID/);
+  assert.equal(bodies.length, 3);
 });
 
 test("failed or cancelled generation cleans preflight staging without final output", async t => {
@@ -233,4 +241,21 @@ test("failed or cancelled generation cleans preflight staging without final outp
   t.mock.method(globalThis, "fetch", async () => { f.controller.abort(); throw f.controller.signal.reason; });
   await assert.rejects(f.tool.execute({ prompt: "fixture", provider: "grok" }, f.exec), { name: "AbortError" });
   assert.deepEqual(await readdir(f.cwd), []);
+});
+
+test("video tool sends saved or explicit model to Grok without fallback", async t => {
+  const bodies = [];
+  let current;
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    bodies.push(JSON.parse(options.body));
+    setTimeout(() => current.controller.abort(), 10);
+    return Response.json({ request_id: "video-model-fixture" });
+  });
+  for (const [explicit, expected] of [[undefined, "grok-video-saved"], ["grok-video-requested", "grok-video-requested"]]) {
+    current = await toolFixture(t, "workspace-write", async () => ({ grokVideoModel: "grok-video-saved" }));
+    await assert.rejects(current.tool.execute({ prompt: "fixture", kind: "video", ...(explicit ? { model: explicit } : {}) }, current.exec), { name: "AbortError" });
+    assert.equal(bodies.at(-1).model, expected);
+    assert.deepEqual(await readdir(current.cwd), []);
+  }
+  assert.equal(bodies.length, 2);
 });

@@ -3,7 +3,7 @@
 <h1>shengcheng · 让想法成为媒体</h1>
 <p><strong>使用 DSH 已登录账号生成图片，用 Grok 生成视频。</strong></p>
 <p><strong>简体中文</strong> · <a href="README.en.md">English</a></p>
-<p><a href="package.json">v0.1.3</a> · <a href="LICENSE">MIT</a> · DSH desktop plugin</p>
+<p><a href="package.json">v0.1.4</a> · <a href="LICENSE">MIT</a> · DSH desktop plugin</p>
 <p><a href="#核心能力">核心能力</a> · <a href="#工作方式">工作方式</a> · <a href="#安装">安装</a> · <a href="#参数与安全边界">参数与安全边界</a> · <a href="#开发">开发</a></p>
 </div>
 
@@ -30,8 +30,8 @@
 
 通过 DeepSeek Harness 里**已经登录**的 Grok / GPT 账号调用图像生成接口，Grok 分支还提供视频生成。是否可用取决于远端接口接受该账号及其权限；对话登录成功不代表生成接口一定可用。当前对话模型不是它们也可以调用。不要走 API key，不要让模型自己 curl。
 
-- **Grok**：`grok-imagine-image-2.0` 生图，`grok-imagine-video-1.5` 生视频
-- **GPT**：`gpt-image-2` 生图（Codex 账号接口，尚未完成真实账号验收）。本插件不提供 GPT 视频生成
+- **Grok**：默认使用 `grok-imagine-image-2.0` 生图、`grok-imagine-video-1.5` 生视频，模型 ID 可在插件设置中更改。
+- **GPT**：默认使用 `gpt-image-2` 生图，模型 ID 可更改（Codex 账号接口，尚未完成真实账号验收）。本插件不提供 GPT 视频生成。
 
 工具只有一个：`shengcheng`（`kind=image` 默认，或 `kind=video`）。未设置默认保存目录时，文件写到会话工作目录，没有工作目录则写到下载文件夹。新版 `zhanshi` 优先读取 `shengcheng_result {"path":"…"}` 结构化结果，完整保留空格、引号和中文路径；同时保留旧版 `saved …` 首行兼容。token 只在 Host 读取 `$DSH_HOME/.credentials.yaml` 的 `llm-pi-ai/xai`、`llm-pi-ai/openai-codex`，不会进对话。
 
@@ -71,7 +71,7 @@ pnpm install --frozen-lockfile
 
 ## 参数与安全边界
 
-在插件详情页的“生成默认设置”中，可保存默认图片提供方、图片比例与质量、视频分辨率与时长和保存目录。视频默认使用 Grok；图片选择“自动”时沿用原提供方和参数默认行为。对话中明确指定的参数优先，指定文件路径时不使用默认目录。目录仍受会话文件权限检查，设置保存在 `$DSH_HOME/storages/shengcheng/settings.json`。
+在插件详情页的“生成默认设置”中，可分别保存 Grok 图片、GPT 图片和 Grok 视频的模型 ID，以及图片提供方、图片比例与质量、视频分辨率与时长和保存目录。所填模型 ID 原样发送到对应账号的现有接口；模型是否可用以及参数是否兼容取决于接口和账号，失败不会自动换用别的模型。视频默认使用 Grok；图片选择“自动”时沿用原提供方和参数默认行为。对话中明确指定的模型和参数优先，指定文件路径时不使用默认目录。目录仍受会话文件权限检查，设置保存在 `$DSH_HOME/storages/shengcheng/settings.json`。
 
 - GPT 图像：本插件当前支持精确的 `1:1 → 1024x1024`、`3:2 → 1536x1024`、`2:3 → 1024x1536`。不支持的比例或 `size`/`aspect_ratio` 冲突会在请求前拒绝，不再静默变形；这不是对上游全部能力的断言。
 - 图像不接受 `duration`/`image_path`；视频不接受 `quality`/`size`；Grok 图像不接受 `size`；GPT 图像不接受 `resolution`。这些字段以前可能被忽略，现在明确报错。

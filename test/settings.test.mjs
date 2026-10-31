@@ -31,4 +31,22 @@ test("settings reject unavailable provider options", () => {
   assert.throws(() => validateSettings({ ...DEFAULT_SETTINGS, provider: "grok", imageQuality: "high" }));
   assert.throws(() => validateSettings({ ...DEFAULT_SETTINGS, provider: "auto", imageQuality: "high" }));
   assert.equal(validateSettings({ ...DEFAULT_SETTINGS, provider: "gpt", imageQuality: "high" }).imageQuality, "high");
+  assert.throws(() => validateSettings({ ...DEFAULT_SETTINGS, grokImageModel: "bad model" }));
+  assert.throws(() => validateSettings({ ...DEFAULT_SETTINGS, gptImageModel: "" }));
+});
+
+test("legacy saved settings gain model defaults without rewriting or discarding the existing choices", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shengcheng-settings-"));
+  try {
+    const path = join(root, "settings.json");
+    const legacy = { provider: "grok", imageAspectRatio: "16:9", imageQuality: "medium", videoResolution: "1080p", videoDuration: 9, outputDirectory: "output" };
+    const original = JSON.stringify(legacy);
+    await writeFile(path, original);
+    const current = await loadSettings(path);
+    assert.deepEqual(current, { ...legacy, grokImageModel: "grok-imagine-image-2.0", gptImageModel: "gpt-image-2", grokVideoModel: "grok-imagine-video-1.5" });
+    assert.equal(await readFile(path, "utf8"), original);
+    delete legacy.videoDuration;
+    await writeFile(path, JSON.stringify(legacy));
+    await assert.rejects(loadSettings(path), /字段/);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
