@@ -90,3 +90,20 @@ test('failed catalog is visible and does not silently expose an empty successful
   assert.match(app.text(), /模型目录不可用/);
   assert.equal(app.label('默认图片模型').props.disabled, true);
 });
+
+test('media errors and empty directories are distinct and unknown routes are disabled', async () => {
+  const result = { groups: [{ id: 'p', name: 'P', models: [{ id: 'chat', name: 'Chat', image: 'unknown', video: 'unavailable' }] }], failures: [], mediaFailures: [{ provider: 'p', kind: 'image', reason: 'interface_missing', missing: ['listMediaModels', 'generateMedia'] }], mediaEmpty: [{ provider: 'p', kind: 'video' }] };
+  const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog: result } : { ok: true, settings: defaults });
+  await app.settle();
+  assert.match(app.text(), /Host 缺少媒体接口：listMediaModels、generateMedia/);
+  assert.match(app.text(), /视频：媒体目录为空/);
+  assert.equal(app.label('默认图片模型').props.children.find(x => x?.props?.value === JSON.stringify(['p', 'chat'])).props.disabled, true);
+});
+
+test('shows per-provider call and contract failures without inventing routes', async () => {
+  const result = { groups: [], failures: [], mediaFailures: [{ provider: 'a', kind: 'image', reason: 'call_failed' }, { provider: 'b', kind: 'video', reason: 'invalid_response' }], mediaEmpty: [] };
+  const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog: result } : { ok: true, settings: defaults });
+  await app.settle();
+  assert.match(app.text(), /a \/ 图片：媒体目录调用失败。能力未知/);
+  assert.match(app.text(), /b \/ 视频：媒体目录返回格式无效。能力未知/);
+});

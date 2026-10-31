@@ -1,6 +1,6 @@
 {
   "name": "shengcheng",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "DSH plugin: generate images and videos using configured media-capable model routes.",
   "type": "module",

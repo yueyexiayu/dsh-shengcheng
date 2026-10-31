@@ -4,7 +4,7 @@ A DSH plugin that generates images or video using model routes configured in DSH
 
 ## Settings
 
-Choose separate default image and video models on the plugin details page, along with the aspect ratio, image quality, video resolution, duration, and output directory. The catalog comes from DSH providers and models. Only routes for which the Host supplies a corresponding media protocol can be selected. “Capability unverified” means the protocol can be attempted; the provider decides whether the model and account support generation. Unsupported routes are disabled. If catalog retrieval fails, its status is unknown and can be refreshed. Save after making changes.
+Choose separate default image and video models on the plugin details page, along with the aspect ratio, image quality, video resolution, duration, and output directory. The catalog comes from DSH providers and models. Only routes for which the Host supplies a corresponding media protocol can be selected. “Capability unverified” means the protocol can be attempted; the provider decides whether the model and account support generation. Routes absent from the media catalog are disabled. The page distinguishes missing Host interfaces, failed catalog calls, invalid responses, and empty catalogs; capability is unknown in the first three cases. Save after making changes.
 
 Parameter choices come from the selected route's protocol capabilities. When changing routes, incompatible defaults are retained and must be corrected before saving. Automatic or blank parameters are omitted from the adapter request.
 
@@ -30,4 +30,4 @@ Tests use the Node test runner. Tests involving DSH filesystem permissions requi
 
 For the cross-module integration test, export `DSH_HOST_SOURCE_ROOT` pointing to a DSH source checkout with dependencies installed, then run `"$DSH_HOST_SOURCE_ROOT/node_modules/.bin/vitest" run --config test/host-vitest.config.mjs`. The test reports an error if that variable is missing.
 
-Version: 0.1.5
+Version: 0.1.6
