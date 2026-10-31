@@ -4,6 +4,7 @@ import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import { registerShengchengTools } from '../lib/tools.js'
+import { createVideoGuard } from '../lib/video-guard.js'
 import { listHostModelCatalog } from '../lib/model-catalog.js'
 import { preflightMediaValidation } from '../lib/validate-media.js'
 import { execFileSync } from 'node:child_process'
@@ -67,8 +68,8 @@ it('uses the configured provider metadata, submits its selected video and safely
     expect(group.models.find(model => model.id === 'video-a')).toMatchObject({ video: 'unverified', image: 'unavailable', videoParameters: { duration: { min: 2, max: 10 }, resolutions: ['768p'] } })
     expect(group.models.find(model => model.id === 'chat-only').video).toBe('unavailable')
     expect(catalog.mediaFailures).toEqual([])
-    registerShengchengTools(ctx, async () => ({ videoRoute: { provider: 'custom', model: 'video-a' }, videoResolution: '720p', videoDuration: 5, outputDirectory: '' }))
-    const exec = { agent: { session: { header: { cwd } } }, signal: new AbortController().signal }
+    registerShengchengTools(ctx, async () => ({ videoRoute: { provider: 'custom', model: 'video-a' }, videoResolution: '720p', videoDuration: 5, outputDirectory: '' }), createVideoGuard(join(root, 'jobs.sqlite')))
+    const exec = { agent: { session: { id: 'session-fixture', header: { cwd } } }, signal: new AbortController().signal }
     const result = await tool.execute({ kind: 'video', prompt: 'move fixture', image_path: 'reference.png', path: 'result.mp4' }, exec)
     expect(result).toMatchObject({ provider: 'custom', model: 'video-a', kind: 'video' })
     expect(await readFile(result.path)).toEqual(video)

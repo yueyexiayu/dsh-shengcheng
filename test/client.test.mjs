@@ -8,7 +8,7 @@ const legacy = { provider: 'gpt', imageAspectRatio: '3:2', imageQuality: 'medium
 const defaults = { imageRoute: null, videoRoute: null, imageFallbackRoute: null, videoFallbackRoute: null, imageAspectRatio: '3:2', imageQuality: 'medium', videoResolution: '720p', videoDuration: 5, outputDirectory: 'output', legacySettings: legacy };
 const catalog = { groups: [{ id: 'p1', name: 'Provider One', models: [{ id: 'same', name: 'Same', image: 'declared', video: 'unavailable', imageParameters: { aspectRatios: ['1:1', '3:2'], qualities: ['low', 'medium', 'high'] } }, { id: 'video', name: 'Video', image: 'unavailable', video: 'unverified', videoParameters: { resolutions: ['480p', '720p'], duration: { min: 1, max: 15 } } }] }, { id: 'p2', name: 'Provider Two', models: [{ id: 'same', name: 'Same', image: 'unverified', video: 'unavailable', imageParameters: { aspectRatios: ['1:1'], qualities: ['low'] } }] }], failures: [], mediaFailures: [] };
 
-function harness(handler) {
+function harness(handler, jobsHandler = () => ({ ok: true, jobs: [] })) {
   let plugin, component, tree, dirty = true, cursor = 0;
   const hooks = [], effects = [], calls = [];
   const React = {
@@ -18,7 +18,7 @@ function harness(handler) {
   };
   vm.runInNewContext(code, { window: { __ModuleLoader__: { load(spec) { plugin = spec.factory(name => { assert.equal(name, 'react'); return React; }); } } }, AbortController, fetch: async (url, options) => {
     const call = { url, method: options.method ?? 'GET', body: options.body && JSON.parse(options.body) }; calls.push(call);
-    const body = await handler(call); return { ok: body.ok, status: body.ok ? 200 : 503, json: async () => body };
+    const body = call.url.endsWith('/video-jobs') ? await jobsHandler(call) : await handler(call); return { ok: body.ok, status: body.ok ? 200 : 503, json: async () => body };
   } });
   plugin.apply({ slots: { inject(name, callback) { assert.equal(name, 'plugins.bundle.config'); callback(); }, register(options, value) { assert.equal(options.key, 'shengcheng'); component = value; } } });
   function render() { dirty = false; cursor = 0; tree = component(); while (effects.length) effects.shift()(); }
@@ -29,6 +29,17 @@ function harness(handler) {
   async function settle() { for (let i = 0; i < 5; i++) { if (dirty) render(); await new Promise(resolve => setImmediate(resolve)); } if (dirty) render(); }
   return { calls, settle, label, button, text: () => text(tree), async change(name, value) { label(name).props.onChange({ target: { value } }); await settle(); }, async submit() { await nodes().find(node => node.type === 'form').props.onSubmit({ preventDefault() {} }); await settle(); } };
 }
+
+test('shows an uncertain job and reports pending without offering a new submission', async () => {
+  const job = { token: 'token-1', provider: 'p', model: 'video', jobId: 'job-1' };
+  const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog } : { ok: true, settings: defaults }, call => call.method === 'POST' ? { ok: true, state: 'pending' } : { ok: true, jobs: [job] });
+  await app.settle();
+  assert.match(app.text(), /视频任务状态未确认：p \/ video/);
+  await app.button('查询状态').props.onClick();
+  await app.settle();
+  assert.match(app.text(), /视频任务仍在运行，保护保持开启/);
+  assert.equal(app.calls.find(call => call.url.endsWith('/video-jobs') && call.method === 'POST').body.action, 'check');
+});
 
 test('selects DSH provider and model as a pair, and preserves old settings on save', async () => {
   const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog } : { ok: true, revision: 'revision-1', settings: call.body?.settings ?? defaults });

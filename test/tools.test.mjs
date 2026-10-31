@@ -7,7 +7,7 @@ test("registers the generation tool and the two authenticated Host routes", () =
   const names = [], paths = [];
   apply({ llm: {}, tools: { register(tool) { names.push(tool.name); assert.equal(typeof tool.execute, "function"); assert.equal(tool.timeoutMs, 1_210_000); } }, connection: { fetch: { register(route) { assert.equal(route.requestBody, "buffered"); paths.push(route.path); } } } });
   assert.deepEqual(names, ["shengcheng"]);
-  assert.deepEqual(paths, ["/api/shengcheng/settings", "/api/shengcheng/models"]);
+  assert.deepEqual(paths, ["/api/shengcheng/settings", "/api/shengcheng/models", "/api/shengcheng/video-jobs"]);
   assert.throws(() => registerShengchengTools({}), TypeError);
 });
 

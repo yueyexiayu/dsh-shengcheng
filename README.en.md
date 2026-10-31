@@ -32,4 +32,4 @@ Tests use the Node test runner. Tests involving DSH filesystem permissions requi
 
 For the cross-module integration test, export `DSH_HOST_SOURCE_ROOT` pointing to a DSH source checkout with dependencies installed, then run `"$DSH_HOST_SOURCE_ROOT/node_modules/.bin/vitest" run --config test/host-vitest.config.mjs`. The test reports an error if that variable is missing.
 
-Version: 0.1.11
+Version: 0.1.12
