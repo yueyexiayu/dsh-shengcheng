@@ -191,9 +191,13 @@ test("Host route selection dispatches the chosen image model and applies explici
   assert.equal(requests[1].aspectRatio, "1:1");
   assert.equal(requests[1].quality, "high");
   assert.equal(second.path, join(await realpath(f.cwd), "explicit.png"));
+  await f.tool.execute({ prompt: "custom size", size: "1024x1024", quality: "low", path: "custom-size.png" }, f.exec);
+  assert.equal(requests[2].size, "1024x1024");
+  assert.equal(requests[2].quality, "low");
+  assert.equal(requests[2].aspectRatio, undefined, "explicit image size suppresses the saved aspect ratio");
   settings = { ...settings, outputDirectory: "../outside" };
   await assert.rejects(f.tool.execute({ prompt: "third" }, f.exec), /workspace-write/);
-  assert.equal(requests.length, 2, "sandbox rejection precedes generation");
+  assert.equal(requests.length, 3, "sandbox rejection precedes generation");
 });
 
 test("user-selected model is sent even when media discovery is unavailable or empty", async t => {
@@ -385,8 +389,9 @@ test("video fallback uses its exact DSH route and its bytes are decoded before s
   const bytes = execFileSync(ffmpeg, ["-v", "error", "-f", "lavfi", "-i", "color=c=red:s=16x16:r=5", "-t", "1", "-c:v", "mpeg4", "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1"]);
   const requests = [];
   f.ctx.llm.generateMedia = async options => { requests.push(options); if (requests.length === 1) { const error = new Error("upstream"); error.code = "MEDIA_PROVIDER_ERROR"; throw error; } return { provider: options.provider, model: options.model, kind: options.kind, bytes, duration: 1 }; };
-  const result = await f.tool.execute({ kind: "video", prompt: "fixture", path: "result.mp4" }, f.exec);
+  const result = await f.tool.execute({ kind: "video", prompt: "fixture", resolution: "1080p", duration: 3, path: "result.mp4" }, f.exec);
   assert.deepEqual(requests.map(item => [item.provider, item.model]), [["provider-b", "video-model"], ["provider-d", "backup-video"]]);
+  assert.deepEqual(requests.map(item => [item.resolution, item.duration]), [["1080p", 3], ["1080p", 3]], "conversation parameters take precedence on both attempts");
   assert.equal(result.provider, "provider-d"); assert.equal(result.model, "backup-video");
   assert.equal(result.duration, 1); assert.deepEqual(await readFile(result.path), bytes);
 });

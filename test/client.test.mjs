@@ -57,31 +57,50 @@ test('unset routes retain defaults without labeling them incompatible', async ()
   const option = resolution.props.children.find(item => item?.props?.value === '720p');
   assert.equal(resolution.props.value, '720p');
   assert.equal(option.props.children.join(''), '720p');
-  assert.equal(option.props.disabled, false);
+  assert.notEqual(option.props.disabled, true);
 });
 
-test('switching routes preserves incompatible defaults and requires correction before saving', async () => {
+test('switching routes preserves defaults and offers common values without asserting support', async () => {
   const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog } : { ok: true, settings: defaults });
   await app.settle();
   await app.change('默认图片模型', JSON.stringify(['p2', 'same']));
-  assert.match(app.text(), /图片比例、图片质量/);
-  assert.equal(app.button('保存设置').props.disabled, true);
-  assert.equal(app.label('默认图片比例').props.value, '3:2');
-  await app.change('默认图片比例', '1:1');
-  await app.change('默认图片质量', 'low');
+  assert.match(app.text(), /是否支持以提供方实际调用结果为准/);
   assert.equal(app.button('保存设置').props.disabled, false);
+  assert.equal(app.label('默认图片比例').props.value, '3:2');
+  assert.notEqual(app.label('默认图片比例').props.children.find(item => item?.props?.value === '16:9').props.disabled, true);
+  assert.notEqual(app.label('默认图片质量').props.children.find(item => item?.props?.value === 'high').props.disabled, true);
 });
 
-test('optional fallback restricts defaults to the intersection and rejects the main route itself', async () => {
+test('fallback does not restrict common defaults and rejects the main route itself', async () => {
   const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog } : { ok: true, revision: 'r1', settings: defaults });
   await app.settle();
   await app.change('默认图片模型', JSON.stringify(['p1', 'same']));
   await app.change('图片兜底模型', JSON.stringify(['p1', 'same']));
   assert.match(app.text(), /兜底模型与主模型相同/);
   await app.change('图片兜底模型', JSON.stringify(['p2', 'same']));
-  assert.match(app.text(), /图片比例、图片质量/);
-  await app.change('默认图片比例', '1:1'); await app.change('默认图片质量', 'low');
   assert.equal(app.button('保存设置').props.disabled, false);
+  assert.notEqual(app.label('默认图片比例').props.children.find(item => item?.props?.value === '3:2').props.disabled, true);
+});
+
+test('common options remain available without metadata and include extra provider values', async () => {
+  const data = { groups: [{ id: 'p', name: 'P', models: [{ id: 'one', name: 'One', image: 'unknown', video: 'unknown' }, { id: 'two', name: 'Two', video: 'declared', videoParameters: { resolutions: ['768p'] } }] }], failures: [], mediaFailures: [] };
+  const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog: data } : { ok: true, revision: 'r1', settings: call.body?.settings ?? defaults });
+  await app.settle();
+  await app.change('默认图片模型', JSON.stringify(['p', 'one']));
+  await app.change('默认视频模型', JSON.stringify(['p', 'one']));
+  await app.change('视频兜底模型', JSON.stringify(['p', 'two']));
+  for (const [field, values] of [['默认图片比例', ['1:1', '3:2', '2:3', '16:9', '9:16', '4:3', '3:4']], ['默认图片质量', ['low', 'medium', 'high']], ['默认视频分辨率', ['480p', '720p', '1080p', '768p']]]) {
+    const options = app.label(field).props.children;
+    for (const value of values) assert.notEqual(options.find(item => item?.props?.value === value)?.props.disabled, true, `${field}: ${value}`);
+    for (const value of values) assert.ok(options.find(item => item?.props?.value === value), `${field}: ${value}`);
+  }
+  await app.change('默认图片比例', '16:9');
+  await app.change('默认图片质量', 'high');
+  await app.change('默认视频分辨率', '1080p');
+  assert.equal(app.button('保存设置').props.disabled, false);
+  await app.submit();
+  const saved = app.calls.find(call => call.method === 'POST').body.settings;
+  assert.equal(saved.imageAspectRatio, '16:9'); assert.equal(saved.imageQuality, 'high'); assert.equal(saved.videoResolution, '1080p');
 });
 
 test('failed catalog is visible and does not silently expose an empty successful list', async () => {
@@ -110,6 +129,6 @@ test('media catalog failures do not produce distracting per-provider errors', as
   const result = { groups: [], failures: [], mediaFailures: [{ provider: 'a', kind: 'image', reason: 'call_failed' }, { provider: 'b', kind: 'video', reason: 'invalid_response' }, { provider: 'xai', kind: 'image', reason: 'missing_credential' }, { provider: 'c', kind: 'video', reason: 'catalog_unavailable' }], mediaEmpty: [] };
   const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog: result } : { ok: true, settings: defaults });
   await app.settle();
-  assert.match(app.text(), /可自行选择已配置的模型/);
+  assert.match(app.text(), /可自行选择模型和常规参数/);
   assert.doesNotMatch(app.text(), /媒体目录调用失败|媒体目录返回格式无效|媒体 API 凭据不可用/);
 });

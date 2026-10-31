@@ -6,7 +6,7 @@ A DSH plugin that generates images or video using model routes configured in DSH
 
 Choose separate default image and video models on the plugin details page, along with the aspect ratio, image quality, video resolution, duration, and output directory. Choose any model listed in the DSH catalog; the provider and actual invocation determine whether generation succeeds. Save after making changes.
 
-Parameter choices come from the selected route's known protocol capabilities. When changing routes, defaults known to be incompatible are retained and must be corrected before saving; unknown capabilities do not prevent saving. Automatic or blank parameters are omitted from the adapter request.
+Common parameter choices are always available, along with additional values from the selected routes' catalogs. A listed choice does not guarantee provider support; the provider determines the actual result. Automatic or blank parameters are omitted from the adapter request.
 
 Optionally choose one fallback route each for images and video. A confirmed upstream failure or invalid media triggers at most one fallback attempt. Cancellation, local permissions, invalid input, and save failures do not trigger another generation. A generation that may still be running does not trigger a fallback, avoiding duplicate generation. If both attempts fail, their failure stages are reported.
 
@@ -30,4 +30,4 @@ Tests use the Node test runner. Tests involving DSH filesystem permissions requi
 
 For the cross-module integration test, export `DSH_HOST_SOURCE_ROOT` pointing to a DSH source checkout with dependencies installed, then run `"$DSH_HOST_SOURCE_ROOT/node_modules/.bin/vitest" run --config test/host-vitest.config.mjs`. The test reports an error if that variable is missing.
 
-Version: 0.1.9
+Version: 0.1.10
