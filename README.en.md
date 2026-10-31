@@ -3,7 +3,7 @@
 <h1>shengcheng · Turn ideas into media</h1>
 <p><strong>Generate images with DSH's signed-in accounts, and videos with Grok.</strong></p>
 <p><a href="README.md">简体中文</a> · <strong>English</strong></p>
-<p><a href="package.json">v0.1.1</a> · <a href="LICENSE">MIT</a> · DSH desktop plugin</p>
+<p><a href="package.json">v0.1.2</a> · <a href="LICENSE">MIT</a> · DSH desktop plugin</p>
 <p><a href="#features">Features</a> · <a href="#how-it-works">How it works</a> · <a href="#installation">Installation</a> · <a href="#parameters-and-boundaries">Boundaries</a> · <a href="#development">Development</a></p>
 </div>
 
