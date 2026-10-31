@@ -212,10 +212,10 @@ test("unsupported route, mismatched response, or adapter failure never silently 
   const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, outputDirectory: "" }));
   let requests = 0;
   f.ctx.llm.generateMedia = async options => { requests++; if (requests === 1) return { ...options, provider: "provider-c", bytes: new Uint8Array([1]) }; throw new Error("adapter rejected model"); };
-  await assert.rejects(f.tool.execute({ prompt: "test", provider: "unknown", model: "bad" }, f.exec), /没有注册/);
+  await assert.rejects(f.tool.execute({ prompt: "test", provider: "unknown", model: "bad" }, f.exec), /目录失败/);
   assert.equal(requests, 0);
   await assert.rejects(f.tool.execute({ prompt: "test" }, f.exec), /不一致/);
-  await assert.rejects(f.tool.execute({ prompt: "test" }, f.exec), /adapter rejected model/);
+  await assert.rejects(f.tool.execute({ prompt: "test" }, f.exec), /上游生成失败/);
   assert.equal(requests, 2);
   assert.deepEqual(await readdir(f.cwd), []);
 });
@@ -248,6 +248,20 @@ test("fallback failure reports both stages without leaking upstream bodies", asy
   f.ctx.llm.generateMedia = async () => { calls++; const error = new Error("secret-url-and-token"); error.code = calls === 1 ? "MEDIA_TRANSPORT" : "INVALID_MEDIA_REQUEST"; throw error; };
   await assert.rejects(f.tool.execute({ prompt: "draw" }, f.exec), error => /主模型 provider-a\/image-model/.test(error.message) && /兜底模型 provider-c\/override-model/.test(error.message) && /MEDIA_TRANSPORT/.test(error.message) && /INVALID_MEDIA_REQUEST/.test(error.message) && !/secret-url-and-token/.test(error.message));
   assert.equal(calls, 2);
+});
+
+test("single-route adapter and catalog failures do not expose upstream secrets", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, outputDirectory: "" }));
+  const secret = "signed-url-or-token-secret";
+  const original = f.ctx.llm.listMediaModels;
+  f.ctx.llm.generateMedia = async () => { throw new Error("unexpected generation"); };
+  f.ctx.llm.listMediaModels = async () => { throw Object.assign(new Error(secret), { code: "PRIVATE_SECRET" }); };
+  await assert.rejects(f.tool.execute({ prompt: "draw" }, f.exec), error => /目录失败/.test(error.message) && !error.message.includes(secret) && !error.message.includes("PRIVATE_SECRET"));
+  f.ctx.llm.listMediaModels = original;
+  for (const code of ["MEDIA_PROVIDER_ERROR", "INVALID_MEDIA_REQUEST", "PRIVATE_SECRET"]) {
+    f.ctx.llm.generateMedia = async () => { throw Object.assign(new Error(secret), { code }); };
+    await assert.rejects(f.tool.execute({ prompt: "draw" }, f.exec), error => /上游生成失败/.test(error.message) && !error.message.includes(secret) && !error.message.includes("PRIVATE_SECRET"));
+  }
 });
 
 test("upstream HTTP 400 and 422 may use the explicitly configured fallback", async t => {
@@ -307,7 +321,7 @@ test("a fallback identical to the resolved main route is never called twice", as
   const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, imageFallbackRoute: { provider: "provider-a", model: "image-model" }, outputDirectory: "" }));
   let calls = 0;
   f.ctx.llm.generateMedia = async () => { calls++; const error = new Error("failed"); error.code = "MEDIA_PROVIDER_ERROR"; throw error; };
-  await assert.rejects(f.tool.execute({ prompt: "draw" }, f.exec), /failed/);
+  await assert.rejects(f.tool.execute({ prompt: "draw" }, f.exec), /MEDIA_PROVIDER_ERROR/);
   assert.equal(calls, 1);
 });
 
@@ -320,7 +334,7 @@ test("invalid input, local denial, and user cancellation never call fallback", a
   assert.equal(calls, 0);
   f.state.mode = "workspace-write";
   f.ctx.llm.generateMedia = async () => { calls++; const error = new Error("bad request"); error.code = "INVALID_MEDIA_REQUEST"; throw error; };
-  await assert.rejects(f.tool.execute({ prompt: "draw" }, f.exec), /bad request/);
+  await assert.rejects(f.tool.execute({ prompt: "draw" }, f.exec), /INVALID_MEDIA_REQUEST/);
   assert.equal(calls, 1);
   f.ctx.llm.generateMedia = async options => { calls++; f.controller.abort(); options.signal.throwIfAborted(); };
   await assert.rejects(f.tool.execute({ prompt: "draw" }, f.exec), { name: "AbortError" });
