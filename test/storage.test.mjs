@@ -8,7 +8,6 @@ import { registerShengchengTools } from "../lib/tools.js";
 import { execFileSync } from "node:child_process";
 import { preflightMediaValidation } from "../lib/validate-media.js";
 import { MAX_IMAGE_BYTES } from "../lib/parse.js";
-import { createVideoGuard } from "../lib/video-guard.js";
 
 // Double models the inspected official resolve/checkedTarget/processPath contract;
 // it is deliberately independent of the plugin's storage implementation.
@@ -167,7 +166,7 @@ async function toolFixture(t, mode, getDefaults) {
   let tool;
   f.ctx.tools = { register: value => { tool = value; } };
   f.ctx.llm = {};
-  registerShengchengTools(f.ctx, getDefaults, createVideoGuard(join(f.root, "video-jobs.sqlite")));
+  registerShengchengTools(f.ctx, getDefaults);
   return { ...f, tool };
 }
 
@@ -263,29 +262,58 @@ test("an uncertain upstream job does not start a fallback or leak its details", 
     f.ctx.llm.generateMedia = async () => { calls++; if (code === "TimeoutError") throw new DOMException("private-job-details", code); throw Object.assign(new Error("private-job-details"), { code }); };
     await assert.rejects(f.tool.execute({ prompt: "video", kind: "video" }, f.exec), error => /状态未知/.test(error.message) && /未自动切换兜底/.test(error.message) && !error.message.includes("private-job-details"));
     assert.equal(calls, 1);
-    await assert.rejects(f.tool.execute({ prompt: "changed", kind: "video", resolution: "1080p", provider: "other", model: "other" }, f.exec), /状态未知/);
-    assert.equal(calls, 1);
+    await assert.rejects(f.tool.execute({ prompt: "video", kind: "video" }, f.exec), /状态未知/);
+    assert.equal(calls, 2);
   }
 });
 
-test("submission diagnosis is reported and saved without exposing provider errors or resubmitting", async t => {
+test("submission diagnosis is reported without exposing provider errors", async t => {
   const f = await toolFixture(t, "workspace-write", async () => ({ videoRoute: { provider: "p", model: "video" }, videoFallbackRoute: { provider: "other", model: "other" }, outputDirectory: "" }));
   let calls = 0;
   f.ctx.llm.generateMedia = async () => { calls++; throw Object.assign(new Error("private-body"), { code: "MEDIA_JOB_UNCERTAIN", failure: { mediaDiagnostic: "submit_http", status: 503, body: "private-body" } }); };
-  await assert.rejects(f.tool.execute({ prompt: "video", kind: "video" }, f.exec), error => /未保存可用的任务 ID/.test(error.message) && /HTTP 503/.test(error.message) && !/private-body/.test(error.message));
-  const jobs = createVideoGuard(join(f.root, "video-jobs.sqlite")).list();
-  assert.equal(jobs.length, 1);
-  assert.match(jobs[0].diagnosticMessage, /HTTP 503/);
-  await assert.rejects(f.tool.execute({ resume_video: true }, f.exec), /未保存可用的任务 ID/);
+  await assert.rejects(f.tool.execute({ prompt: "video", kind: "video" }, f.exec), error => /状态未知/.test(error.message) && /HTTP 503/.test(error.message) && !/private-body/.test(error.message));
   await assert.rejects(f.tool.execute({ prompt: "changed", kind: "video", provider: "other", model: "other" }, f.exec), /状态未知/);
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
 });
 
-test("an accepted ID that could not be saved is described without contradicting the diagnosis", async t => {
-  const f = await toolFixture(t, "workspace-write", async () => ({ videoRoute: { provider: "p", model: "video" }, outputDirectory: "" }));
-  f.ctx.llm.generateMedia = async () => { throw Object.assign(new Error("private-body"), { code: "MEDIA_JOB_UNCERTAIN", failure: { mediaDiagnostic: "accepted_persist_failed" } }); };
-  await assert.rejects(f.tool.execute({ prompt: "video", kind: "video" }, f.exec), error => /未保存可用的任务 ID/.test(error.message) && /收到任务 ID 后本地记录失败/.test(error.message) && !/未取得任务 ID/.test(error.message));
-  assert.equal(createVideoGuard(join(f.root, "video-jobs.sqlite")).list().length, 1);
+test("ambiguous video provider failures do not trigger automatic fallback or block later calls", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ videoRoute: { provider: "p", model: "main" }, videoFallbackRoute: { provider: "q", model: "fallback" }, outputDirectory: "" }));
+  const calls = [];
+  f.ctx.llm.generateMedia = async options => { calls.push(options.model); throw Object.assign(new Error("private"), { code: "MEDIA_PROVIDER_ERROR" }); };
+  await assert.rejects(f.tool.execute({ kind: "video", prompt: "video" }, f.exec), /MEDIA_PROVIDER_ERROR/);
+  await assert.rejects(f.tool.execute({ kind: "video", prompt: "video" }, f.exec), /MEDIA_PROVIDER_ERROR/);
+  assert.deepEqual(calls, ["main", "main"]);
+});
+
+test("video fallback requires a matching confirmed failure in the current call", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ videoRoute: { provider: "p", model: "main" }, videoFallbackRoute: { provider: "q", model: "fallback" }, outputDirectory: "" }));
+  const { ffmpeg } = await preflightMediaValidation();
+  const bytes = execFileSync(ffmpeg, ["-v", "error", "-f", "lavfi", "-i", "color=c=red:s=16x16:r=5", "-t", "1", "-c:v", "mpeg4", "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1"]);
+  const calls = [];
+  let state = "pending", reason;
+  f.ctx.llm.getMediaJobStatus = async options => ({ ...options, state, reason });
+  f.ctx.llm.generateMedia = async options => {
+    calls.push(options.model);
+    if (options.model === "main") { options.onJobAccepted("job-1", "a".repeat(64)); throw Object.assign(new Error("private"), { code: "MEDIA_PROVIDER_ERROR" }); }
+    return { ...options, bytes };
+  };
+  await assert.rejects(f.tool.execute({ kind: "video", prompt: "test" }, f.exec), /MEDIA_PROVIDER_ERROR/);
+  assert.deepEqual(calls, ["main"]);
+  state = "failed"; reason = "content_moderation";
+  await assert.rejects(f.tool.execute({ kind: "video", prompt: "test" }, f.exec), /内容审核拒绝/);
+  assert.deepEqual(calls, ["main", "main"]);
+  reason = undefined;
+  const result = await f.tool.execute({ kind: "video", prompt: "test", path: "fallback-confirmed.mp4" }, f.exec);
+  assert.equal(result.model, "fallback");
+  assert.deepEqual(calls, ["main", "main", "main", "fallback"]);
+});
+
+test("invalid returned video does not automatically generate a fallback", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ videoRoute: { provider: "p", model: "main" }, videoFallbackRoute: { provider: "q", model: "fallback" }, outputDirectory: "" }));
+  const calls = [];
+  f.ctx.llm.generateMedia = async options => { calls.push(options.model); return { ...options, bytes: Buffer.from("invalid video") }; };
+  await assert.rejects(f.tool.execute({ kind: "video", prompt: "video" }, f.exec));
+  assert.deepEqual(calls, ["main"]);
 });
 
 test("unknown reference image input is reported and never silently falls back", async t => {
@@ -413,18 +441,16 @@ test("video uses its own exact route and cancellation is propagated", async t =>
   assert.deepEqual(await readdir(f.cwd), []);
 });
 
-test("an accepted uncertain video is recovered from its task without a second submission", async t => {
+test("a video can be submitted without a session ID or accessing an old guard database", async t => {
   const f = await toolFixture(t, "workspace-write", async () => ({ videoRoute: { provider: "p", model: "m" }, outputDirectory: "" }));
-  const { ffmpeg } = await preflightMediaValidation();
-  const bytes = execFileSync(ffmpeg, ["-v", "error", "-f", "lavfi", "-i", "color=c=red:s=16x16:r=5", "-t", "1", "-c:v", "mpeg4", "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1"]);
-  let posts = 0, statusCalls = 0, downloads = 0;
-  f.ctx.llm.generateMedia = async options => { posts++; await options.onJobAccepted("job-1", "a".repeat(64)); throw Object.assign(new Error("timeout"), { code: "MEDIA_JOB_UNCERTAIN" }); };
-  f.ctx.llm.getMediaJobStatus = async options => { statusCalls++; assert.equal(options.routeFingerprint, "a".repeat(64)); return { ...options, state: "completed" }; };
-  f.ctx.llm.fetchMediaJobResult = async options => { downloads++; return { provider: options.provider, model: options.model, kind: "video", bytes }; };
-  await assert.rejects(f.tool.execute({ kind: "video", prompt: "first" }, f.exec), /状态未知/);
-  const saved = await f.tool.execute({ resume_video: true, image_path: "missing-reference.png", resolution: "invalid", path: "recovered.mp4" }, f.exec);
-  assert.deepEqual(await readFile(saved.path), bytes);
-  assert.equal(posts, 1); assert.equal(statusCalls, 1); assert.equal(downloads, 1);
+  const stale = join(f.root, "video-jobs.sqlite");
+  await writeFile(stale, "old record");
+  delete f.exec.agent.session.id;
+  let calls = 0;
+  f.ctx.llm.generateMedia = async () => { calls++; throw Object.assign(new Error("hidden"), { code: "MEDIA_JOB_UNCERTAIN" }); };
+  await assert.rejects(f.tool.execute({ kind: "video", prompt: "test" }, f.exec), /状态未知/);
+  assert.equal(calls, 1);
+  assert.equal(await readFile(stale, "utf8"), "old record");
 });
 
 test("moderation rejection does not attempt a fallback", async t => {
@@ -435,17 +461,16 @@ test("moderation rejection does not attempt a fallback", async t => {
   assert.equal(calls, 1);
 });
 
-test("a completed video whose local publication fails retains its recoverable task", async t => {
+test("a completed video whose local publication fails does not start fallback", async t => {
   const f = await toolFixture(t, "workspace-write", async () => ({ videoRoute: { provider: "p", model: "m" }, outputDirectory: "" }));
   const { ffmpeg } = await preflightMediaValidation();
   const bytes = execFileSync(ffmpeg, ["-v", "error", "-f", "lavfi", "-i", "color=c=red:s=16x16:r=5", "-t", "1", "-c:v", "mpeg4", "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1"]);
-  let generated = false;
-  f.ctx.llm.generateMedia = async options => { await options.onJobAccepted("job-1", "a".repeat(64)); generated = true; return { provider: "p", model: "m", kind: "video", bytes }; };
+  let generated = false, calls = 0;
+  f.ctx.llm.generateMedia = async () => { calls++; generated = true; return { provider: "p", model: "m", kind: "video", bytes }; };
   const check = f.ctx.fs.checkedTarget;
   f.ctx.fs.checkedTarget = async (target, policy) => { if (generated && target.displayPath.endsWith("result.mp4")) throw new Error("publication denied"); return check(target, policy); };
   await assert.rejects(f.tool.execute({ kind: "video", prompt: "test", path: "result.mp4" }, f.exec), /无需重新生成/);
-  const savedJob = createVideoGuard(join(f.root, "video-jobs.sqlite")).forSession("session-fixture");
-  assert.equal(savedJob.jobId, "job-1");
+  assert.equal(calls, 1);
 });
 
 test("video fallback uses its exact DSH route and its bytes are decoded before saving", async t => {
@@ -453,8 +478,7 @@ test("video fallback uses its exact DSH route and its bytes are decoded before s
   const { ffmpeg } = await preflightMediaValidation();
   const bytes = execFileSync(ffmpeg, ["-v", "error", "-f", "lavfi", "-i", "color=c=red:s=16x16:r=5", "-t", "1", "-c:v", "mpeg4", "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1"]);
   const requests = [];
-  f.ctx.llm.getMediaJobStatus = async options => ({ ...options, state: "failed" });
-  f.ctx.llm.generateMedia = async options => { requests.push(options); if (requests.length === 1) { await options.onJobAccepted("job-1", "a".repeat(64)); const error = new Error("upstream"); error.code = "MEDIA_PROVIDER_ERROR"; throw error; } return { provider: options.provider, model: options.model, kind: options.kind, bytes, duration: 1 }; };
+  f.ctx.llm.generateMedia = async options => { requests.push(options); if (requests.length === 1) { const error = new Error("upstream"); error.code = "MEDIA_REQUEST_REJECTED"; throw error; } return { provider: options.provider, model: options.model, kind: options.kind, bytes, duration: 1 }; };
   const result = await f.tool.execute({ kind: "video", prompt: "fixture", resolution: "1080p", duration: 3, path: "result.mp4" }, f.exec);
   assert.deepEqual(requests.map(item => [item.provider, item.model]), [["provider-b", "video-model"], ["provider-d", "backup-video"]]);
   assert.deepEqual(requests.map(item => [item.resolution, item.duration]), [["1080p", 3], ["1080p", 3]], "conversation parameters take precedence on both attempts");
@@ -472,8 +496,7 @@ test("explicit resolution overrides the default and both routes receive the chos
     { provider, kind, id: "main", availability: "declared", parameters: { resolutions: ["768P"] } },
     { provider, kind, id: "backup", availability: "declared", parameters: { resolutions: ["480P"] } },
   ];
-  f.ctx.llm.getMediaJobStatus = async options => ({ ...options, state: "failed" });
-  f.ctx.llm.generateMedia = async options => { calls.push(options); if (options.model === "main") { await options.onJobAccepted("job-1", "a".repeat(64)); throw Object.assign(new Error("failure"), { code: "MEDIA_PROVIDER_ERROR" }); } return { ...options, bytes }; };
+  f.ctx.llm.generateMedia = async options => { calls.push(options); if (options.model === "main") throw Object.assign(new Error("failure"), { code: "MEDIA_REQUEST_REJECTED" }); return { ...options, bytes }; };
   const recovered = await f.tool.execute({ kind: "video", prompt: "fixture", path: "fallback.mp4" }, f.exec);
   assert.deepEqual(calls.map(item => item.resolution), ["480p", "480p"]);
   assert.equal(recovered.provider, "p");

@@ -8,7 +8,7 @@ Choose separate default image and video models on the plugin details page, along
 
 Common parameter choices are always available, along with additional values from the selected routes' catalogs. A listed choice does not guarantee provider support; the provider determines the actual result. Automatic or blank parameters are omitted from the adapter request.
 
-Optionally choose one fallback route each for images and video. A confirmed upstream failure or invalid media triggers at most one fallback attempt. Cancellation, local permissions, invalid input, and save failures do not trigger another generation. A generation that may still be running does not trigger a fallback, avoiding duplicate generation. If both attempts fail, their failure stages are reported.
+Optionally choose one fallback route each for images and video. An eligible upstream failure or invalid image can trigger one fallback attempt. Cancellation, local permissions, invalid input, and save failures do not trigger another generation. Uncertain video jobs and invalid returned video do not automatically trigger a fallback. If both attempts fail, their failure stages are reported.
 
 Parameters explicitly given in a conversation take precedence over these defaults. A provider and model together identify the route; generation only switches to an explicitly configured fallback after an eligible failure. A missing selection prompts the user to choose a model. An empty output directory uses the session working directory, or the downloads directory if there is none.
 
@@ -32,4 +32,4 @@ Tests use the Node test runner. Tests involving DSH filesystem permissions requi
 
 For the cross-module integration test, export `DSH_HOST_SOURCE_ROOT` pointing to a DSH source checkout with dependencies installed, then run `"$DSH_HOST_SOURCE_ROOT/node_modules/.bin/vitest" run --config test/host-vitest.config.mjs`. The test reports an error if that variable is missing.
 
-Version: 0.1.13
+Version: 0.1.14

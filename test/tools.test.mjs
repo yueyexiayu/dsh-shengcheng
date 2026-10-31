@@ -7,7 +7,7 @@ test("registers the generation tool and the two authenticated Host routes", () =
   const names = [], paths = [];
   apply({ llm: {}, tools: { register(tool) { names.push(tool.name); assert.equal(typeof tool.execute, "function"); assert.equal(tool.timeoutMs, 1_210_000); } }, connection: { fetch: { register(route) { assert.equal(route.requestBody, "buffered"); paths.push(route.path); } } } });
   assert.deepEqual(names, ["shengcheng"]);
-  assert.deepEqual(paths, ["/api/shengcheng/settings", "/api/shengcheng/models", "/api/shengcheng/video-jobs"]);
+  assert.deepEqual(paths, ["/api/shengcheng/settings", "/api/shengcheng/models"]);
   assert.throws(() => registerShengchengTools({}), TypeError);
 });
 
@@ -17,6 +17,7 @@ test("tool describes explicit user parameters as higher priority than defaults",
   assert.match(tool.description, /User-requested parameters.*take precedence/);
   assert.match(tool.description, /prior assistant guesses.*not user requirements/);
   assert.match(tool.parameters.properties.resolution.description, /explicitly requested by the user/);
+  assert.deepEqual(tool.parameters.required, ["prompt"]);
 });
 
 test("generation deadline is 600 seconds and propagates upstream cancellation", () => {
