@@ -57,3 +57,23 @@ test("reports missing media credentials without exposing the adapter error", asy
   assert.equal(result.mediaFailures[0].reason, "missing_credential");
   assert.doesNotMatch(JSON.stringify(result), /secret-value/);
 });
+
+test("a slow provider does not prevent other media catalogs from starting", async () => {
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const calls = [];
+  const pending = listHostModelCatalog({ listProviders: () => [{ id: "slow" }, { id: "fast" }], listModels: () => [], generateMedia() {}, async listMediaModels(kind, provider) { calls.push(`${provider}:${kind}`); if (provider === "slow") await blocked; return []; } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(calls.includes("fast:image"));
+  assert.ok(calls.includes("fast:video"));
+  release();
+  assert.equal((await pending).mediaEmpty.length, 4);
+});
+
+test("unavailable media discovery is unknown rather than an empty catalog", async () => {
+  const result = await listHostModelCatalog({ listProviders: () => [{ id: "p" }], listModels: () => [{ provider: "p", id: "m", name: "M" }], generateMedia() {}, listMediaModels() { throw Object.assign(new Error("private"), { code: "MEDIA_CATALOG_UNAVAILABLE" }); } });
+  assert.equal(result.mediaFailures[0].reason, "catalog_unavailable");
+  assert.equal(result.groups[0].models[0].video, "unknown");
+  assert.deepEqual(result.mediaEmpty, []);
+  assert.doesNotMatch(JSON.stringify(result), /private/);
+});

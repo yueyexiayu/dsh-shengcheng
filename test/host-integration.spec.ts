@@ -5,6 +5,8 @@ import LlmRuntime from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import { registerShengchengTools } from '../lib/tools.js'
 import { listHostModelCatalog } from '../lib/model-catalog.js'
+import { preflightMediaValidation } from '../lib/validate-media.js'
+import { execFileSync } from 'node:child_process'
 import { mkdtemp, mkdir, readFile, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve, relative, isAbsolute } from 'node:path'
@@ -17,21 +19,27 @@ const { resolveProfiles } = await import(/* @vite-ignore */ hostTestPath('src/co
 const { memoryAuth } = await import(/* @vite-ignore */ hostTestPath('tests/auth-double.ts'))
 afterEach(() => { vi.unstubAllGlobals() })
 
-it('dispatches the plugin selected route through the actual Host and adapter, validates and saves its result', async () => {
-  const image = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII='
+it('uses the configured provider metadata, submits its selected video and safely saves the completed media', async () => {
+  const { ffmpeg } = await preflightMediaValidation()
+  const video = execFileSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=16x16:r=5', '-t', '1', '-c:v', 'mpeg4', '-movflags', 'frag_keyframe+empty_moov', '-f', 'mp4', 'pipe:1'])
   const requests = []
+  const directory = { schema_version: 3, models: [{ id: 'video-a', category: 'videos', method: 'POST', path: '/v1/videos', query_path: '/v1/videos/{task_id}', content_path: '/v1/videos/{task_id}/content', parameters: { model: { required: true }, prompt: { required: true }, seconds: { minimum: 2, maximum: 10 }, resolution: { listed_values: ['720P'] } } }] }
   vi.stubGlobal('fetch', async (url, options) => {
-    requests.push({ url: String(url), method: options.method, headers: options.headers, body: options.body && JSON.parse(options.body) })
-    if (url === 'https://api.openai.com/v1/models' && options.method === 'GET') return Response.json({ data: [{ id: 'gpt-image-2' }, { id: 'ordinary-chat-model' }] })
-    if (url === 'https://api.openai.com/v1/images/generations' && options.method === 'POST') return Response.json({ data: [{ b64_json: image }] })
+    const headers = new Headers(options.headers)
+    requests.push({ url: String(url), method: options.method, authorization: headers.get('authorization'), body: options.body && JSON.parse(options.body) })
+    if (url === 'https://provider.example/docs-data/models.json') return Response.json(directory)
+    if (url === 'https://provider.example/v1/models') return Response.json({ data: [{ id: 'video-a' }, { id: 'chat-only' }] })
+    if (url === 'https://provider.example/v1/videos' && options.method === 'POST') return Response.json({ id: 'job-1' })
+    if (url === 'https://provider.example/v1/videos/job-1') return Response.json({ id: 'job-1', status: 'completed' })
+    if (url === 'https://provider.example/v1/videos/job-1/content') return new Response(video, { headers: { 'content-type': 'video/mp4' } })
     throw new Error('unexpected network call')
   })
   const root = await mkdtemp(join(tmpdir(), 'shengcheng-host-integration-'))
   const cwd = join(root, 'workspace'); await mkdir(cwd)
   const host = new Context(); await host.plugin(LlmRuntime)
-  const profiles = resolveProfiles({ openai: { apiKeyEnv: 'FAKE_KEY' } })
+  const profiles = resolveProfiles({ custom: { api: 'openai-completions', baseURL: 'https://provider.example/v1', apiKeyEnv: 'FAKE_KEY', models: [{ id: 'video-a', name: 'Video A' }, { id: 'chat-only', name: 'Chat only' }] } })
   const adapter = new PiAiAdapter({ profiles: () => profiles, resolveApiKey: () => Promise.resolve('fake-key'), auth: memoryAuth() })
-  const dispose = host.llm.registerAdapter(['openai'], adapter)
+  const dispose = host.llm.registerAdapter(['custom'], adapter)
   const canonical = async path => { try { return await realpath(path) } catch (error) { if (error.code !== 'ENOENT') throw error; return join(await canonical(dirname(path)), path.slice(dirname(path).length + 1)) } }
   let tool
   const ctx = {
@@ -51,51 +59,20 @@ it('dispatches the plugin selected route through the actual Host and adapter, va
   }
   try {
     const catalog = await listHostModelCatalog(host.llm)
-    const group = catalog.groups.find(group => group.id === 'openai')
-    const model = group.models.find(entry => entry.id === 'gpt-image-2')
-    expect(model.image).toBe('unverified')
-    expect(model.video).toBe('unavailable')
-    expect(group.models.find(entry => entry.id === 'ordinary-chat-model')?.image).not.toBe('declared')
+    const group = catalog.groups.find(group => group.id === 'custom')
+    expect(group.models.find(model => model.id === 'video-a')).toMatchObject({ video: 'unverified', image: 'unavailable', videoParameters: { duration: { min: 2, max: 10 }, resolutions: ['720p'] } })
+    expect(group.models.find(model => model.id === 'chat-only').video).toBe('unavailable')
     expect(catalog.mediaFailures).toEqual([])
-    registerShengchengTools(ctx, async () => ({ imageRoute: { provider: 'openai', model: 'gpt-image-2' }, outputDirectory: '' }))
+    registerShengchengTools(ctx, async () => ({ videoRoute: { provider: 'custom', model: 'video-a' }, videoResolution: '720p', videoDuration: 5, outputDirectory: '' }))
     const exec = { agent: { session: { header: { cwd } } }, signal: new AbortController().signal }
-    const result = await tool.execute({ prompt: 'draw a fixture', path: 'result.png' }, exec)
-    const posts = requests.filter(item => item.method === 'POST')
-    expect(posts.map(item => item.url)).toEqual(['https://api.openai.com/v1/images/generations'])
-    expect(posts[0].body).toEqual({ model: 'gpt-image-2', prompt: 'draw a fixture', n: 1 })
-    expect(posts[0].headers.authorization).toBe('Bearer fake-key')
-    expect(result.provider).toBe('openai')
-    expect(result.model).toBe('gpt-image-2')
-    expect(await readFile(result.path)).toEqual(Buffer.from(image, 'base64'))
-    await expect(tool.execute({ prompt: 'bad', provider: 'openai', model: 'ordinary-chat-model' }, exec)).rejects.toThrow(/目录失败/)
-    await expect(tool.execute({ prompt: 'denied', path: '../escape.png' }, exec)).rejects.toThrow(/workspace-write/)
+    const result = await tool.execute({ kind: 'video', prompt: 'move fixture', path: 'result.mp4' }, exec)
+    expect(result).toMatchObject({ provider: 'custom', model: 'video-a', kind: 'video' })
+    expect(await readFile(result.path)).toEqual(video)
+    expect(requests.find(item => item.method === 'POST')).toMatchObject({ url: 'https://provider.example/v1/videos', authorization: 'Bearer fake-key', body: { model: 'video-a', prompt: 'move fixture', seconds: 5, resolution: '720P' } })
+    expect(requests.find(item => item.url.endsWith('/content')).authorization).toBe('Bearer fake-key')
+    expect(requests.filter(item => item.url.endsWith('/docs-data/models.json')).every(item => !item.authorization)).toBe(true)
+    await expect(tool.execute({ kind: 'video', prompt: 'bad', provider: 'custom', model: 'chat-only' }, exec)).rejects.toThrow(/目录失败/)
+    await expect(tool.execute({ kind: 'video', prompt: 'denied', path: '../escape.mp4' }, exec)).rejects.toThrow(/workspace-write/)
     expect(requests.filter(item => item.method === 'POST')).toHaveLength(1)
   } finally { dispose(); await host.fiber.dispose(); await rm(root, { recursive: true, force: true }) }
-}, 20000)
-
-it('exposes only declared xAI video routes and dispatches the selected asynchronous job', async () => {
-  const requests = []
-  vi.stubGlobal('fetch', async (url, options) => {
-    requests.push({ url: String(url), method: options.method, body: options.body && JSON.parse(options.body) })
-    if (url === 'https://api.x.ai/v1/image-generation-models') return Response.json({ models: [] })
-    if (url === 'https://api.x.ai/v1/video-generation-models') return Response.json({ models: [{ id: 'grok-imagine-video-1.5' }] })
-    if (url === 'https://api.x.ai/v1/videos/generations') return Response.json({ request_id: 'fixture-job' })
-    if (url === 'https://api.x.ai/v1/videos/fixture-job') return Response.json({ status: 'done', model: 'grok-imagine-video-1.5', video: { url: 'https://video.example/result.mp4', duration: 5 } })
-    throw new Error('unexpected network call')
-  })
-  const host = new Context(); await host.plugin(LlmRuntime)
-  const profiles = resolveProfiles({ xai: { apiKeyEnv: 'FAKE_KEY' } })
-  const adapter = new PiAiAdapter({ profiles: () => profiles, resolveApiKey: () => Promise.resolve('fake-key'), auth: memoryAuth() })
-  const dispose = host.llm.registerAdapter(['xai'], adapter)
-  try {
-    const catalog = await listHostModelCatalog(host.llm)
-    const route = catalog.groups.find(group => group.id === 'xai').models.find(model => model.id === 'grok-imagine-video-1.5')
-    expect(route.video).toBe('declared')
-    expect(route.videoParameters.duration).toEqual({ min: 1, max: 15 })
-    expect(route.image).toBe('unavailable')
-    const result = await host.llm.generateMedia({ provider: 'xai', model: route.id, kind: 'video', prompt: 'move', duration: 5 })
-    expect(result).toEqual({ provider: 'xai', model: route.id, kind: 'video', url: 'https://video.example/result.mp4', duration: 5 })
-    expect(requests.filter(item => item.method === 'POST')).toEqual([{ url: 'https://api.x.ai/v1/videos/generations', method: 'POST', body: { model: route.id, prompt: 'move', duration: 5 } }])
-    expect(requests.some(item => item.url === 'https://api.x.ai/v1/videos/fixture-job')).toBe(true)
-  } finally { dispose(); await host.fiber.dispose() }
-}, 20000)
+}, 40000)

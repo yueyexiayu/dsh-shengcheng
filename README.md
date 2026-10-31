@@ -30,4 +30,4 @@ DSH 插件：使用 DSH 中配置的模型路线生成图片或视频，并将�
 
 跨模块集成测试需要已安装依赖的 DSH 源码。先在 shell 中导出指向源码的 `DSH_HOST_SOURCE_ROOT`，再运行 `"$DSH_HOST_SOURCE_ROOT/node_modules/.bin/vitest" run --config test/host-vitest.config.mjs`。未设置时测试会明确报错。
 
-版本：0.1.7
+版本：0.1.8
