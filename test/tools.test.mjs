@@ -11,6 +11,14 @@ test("registers the generation tool and the two authenticated Host routes", () =
   assert.throws(() => registerShengchengTools({}), TypeError);
 });
 
+test("tool describes explicit user parameters as higher priority than defaults", () => {
+  let tool;
+  registerShengchengTools({ tools: { register(value) { tool = value; } } });
+  assert.match(tool.description, /User-requested parameters.*take precedence/);
+  assert.match(tool.description, /prior assistant guesses.*not user requirements/);
+  assert.match(tool.parameters.properties.resolution.description, /explicitly requested by the user/);
+});
+
 test("generation deadline is 600 seconds and propagates upstream cancellation", () => {
   const original = AbortSignal.timeout;
   let delay;
@@ -38,4 +46,5 @@ test("explicit per-call settings override persisted defaults", () => {
   assert.deepEqual(resolveGenerationDefaults({ prompt: "p" }, settings), { prompt: "p", aspect_ratio: "3:2", quality: "medium" });
   assert.deepEqual(resolveGenerationDefaults({ prompt: "p", size: "custom", quality: "high" }, settings), { prompt: "p", size: "custom", quality: "high" });
   assert.deepEqual(resolveGenerationDefaults({ kind: "video", duration: 3 }, settings), { kind: "video", duration: 3, resolution: "720p" });
+  assert.deepEqual(resolveGenerationDefaults({ kind: "video", resolution: "1080p", duration: 3 }, settings), { kind: "video", resolution: "1080p", duration: 3 });
 });

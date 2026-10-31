@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { createVideoGuard, videoJobsHandler } from "../lib/video-guard.js";
 
 test("video protection survives reopening and only a confirmed failure releases it", async t => {
@@ -37,4 +38,23 @@ test("no task ID remains unknown until explicit confirmation", async t => {
   assert.equal(guard.list().length, 1);
   assert.equal((await action("confirm")).state, "confirmed");
   assert.equal(guard.list().length, 0);
+});
+
+test("existing protection is preserved while safe diagnostics persist without upstream data", async t => {
+  const root = await mkdtemp(join(tmpdir(), "video-guard-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, "jobs.sqlite"), old = new DatabaseSync(path);
+  old.exec("CREATE TABLE jobs (session TEXT PRIMARY KEY, token TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, job_id TEXT, fingerprint TEXT, created INTEGER NOT NULL)");
+  old.close();
+  const guard = createVideoGuard(path), lease = guard.acquire("session", { provider: "p", model: "m" });
+  guard.diagnose(lease, { mediaDiagnostic: "submit_http", status: 503, secret: "private-body" });
+  const reopened = createVideoGuard(path), jobs = reopened.list();
+  assert.equal(jobs.length, 1);
+  assert.match(jobs[0].diagnosticMessage, /HTTP 503/);
+  assert.doesNotMatch(JSON.stringify(jobs), /private-body/);
+  assert.throws(() => reopened.acquire("session", { provider: "different", model: "different" }), /状态未确认/);
+  reopened.diagnose(lease, { mediaDiagnostic: "private-body", status: 777 });
+  assert.doesNotMatch(JSON.stringify(reopened.list()), /private-body|777/);
+  reopened.release(lease);
+  assert.equal(reopened.list().length, 0);
 });

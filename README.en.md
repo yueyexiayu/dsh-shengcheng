@@ -12,7 +12,7 @@ Optionally choose one fallback route each for images and video. A confirmed upst
 
 Parameters explicitly given in a conversation take precedence over these defaults. A provider and model together identify the route; generation only switches to an explicitly configured fallback after an eligible failure. A missing selection prompts the user to choose a model. An empty output directory uses the session working directory, or the downloads directory if there is none.
 
-If the saved default video resolution is incompatible with the selected route's known catalog, that attempt omits the default so the provider chooses automatically, and the result reports this. An explicit conversation resolution always takes precedence; an unknown catalog preserves the default. Primary and fallback routes are checked independently without changing saved settings.
+When the conversation does not explicitly specify a resolution, the saved default is sent. Choosing automatic omits the resolution; provider support is determined by the actual request.
 
 Settings from the previous version are retained in `legacySettings`, and common image, video, and directory defaults remain in use. Old Grok/GPT model settings are not automatically mapped to different DSH routes; select image and video models again.
 
@@ -32,4 +32,4 @@ Tests use the Node test runner. Tests involving DSH filesystem permissions requi
 
 For the cross-module integration test, export `DSH_HOST_SOURCE_ROOT` pointing to a DSH source checkout with dependencies installed, then run `"$DSH_HOST_SOURCE_ROOT/node_modules/.bin/vitest" run --config test/host-vitest.config.mjs`. The test reports an error if that variable is missing.
 
-Version: 0.1.12
+Version: 0.1.13

@@ -41,6 +41,17 @@ test('shows an uncertain job and reports pending without offering a new submissi
   assert.equal(app.calls.find(call => call.url.endsWith('/video-jobs') && call.method === 'POST').body.action, 'check');
 });
 
+test('shows missing ID and safe submission diagnosis without claiming submission succeeded', async () => {
+  const job = { token: 'token-1', provider: 'p', model: 'video', jobId: null, diagnosticMessage: '提交时收到异常 HTTP 响应，无法确认提供方是否受理（HTTP 503）' };
+  const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog } : { ok: true, settings: defaults }, call => call.method === 'POST' ? { ok: true, state: 'unknown' } : { ok: true, jobs: [job] });
+  await app.settle();
+  assert.match(app.text(), /未保存可用的任务 ID，不能确认是否已受理/);
+  assert.match(app.text(), /HTTP 503/);
+  await app.button('查询状态').props.onClick();
+  await app.settle();
+  assert.match(app.text(), /未保存可用的任务 ID，无法查询/);
+});
+
 test('selects DSH provider and model as a pair, and preserves old settings on save', async () => {
   const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog } : { ok: true, revision: 'revision-1', settings: call.body?.settings ?? defaults });
   await app.settle();
@@ -114,12 +125,12 @@ test('common options remain available without metadata and include extra provide
   assert.equal(saved.imageAspectRatio, '16:9'); assert.equal(saved.imageQuality, 'high'); assert.equal(saved.videoResolution, '1080p');
 });
 
-test('incompatible saved resolution is explained without changing it or blocking save', async () => {
+test('saved resolution remains selected without silent automatic adjustment', async () => {
   const result = { groups: [{ id: 'p', name: 'P', models: [{ id: 'v', name: 'V', video: 'declared', videoParameters: { resolutions: ['768P'] } }] }], failures: [], mediaFailures: [], mediaEmpty: [] };
   const settings = { ...defaults, videoRoute: { provider: 'p', model: 'v' }, videoResolution: '480p' };
   const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog: result } : { ok: true, revision: 'r', settings: call.body?.settings ?? settings });
   await app.settle();
-  assert.match(app.text(), /默认视频分辨率不在主模型的已知参数中/);
+  assert.doesNotMatch(app.text(), /本次调用会由提供方自动选择/);
   assert.equal(app.label('默认视频分辨率').props.value, '480p');
   await app.change('默认视频时长', '6');
   assert.equal(app.button('保存设置').props.disabled, false);
