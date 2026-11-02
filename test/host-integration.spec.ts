@@ -23,7 +23,7 @@ it('uses the configured provider metadata, submits its selected video and safely
   const { ffmpeg } = await preflightMediaValidation()
   const video = execFileSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=16x16:r=5', '-t', '1', '-c:v', 'mpeg4', '-movflags', 'frag_keyframe+empty_moov', '-f', 'mp4', 'pipe:1'])
   const requests = []
-  const directory = { schema_version: 3, models: [{ id: 'video-a', category: 'videos', method: 'POST', path: '/v1/videos', query_path: '/v1/videos/{task_id}', content_path: '/v1/videos/{task_id}/content', parameters: { model: { required: true }, prompt: { required: true }, seconds: { minimum: 2, maximum: 10 }, resolution: { listed_values: ['768P'] }, content: { items: { properties: { type: { listed_values: ['image_url'] }, role: { listed_values: ['first_frame'] }, image_url: { properties: { url: { type: 'string' } } } } } } } }] }
+  const directory = { schema_version: 3, models: [{ id: 'video-a', category: 'videos', method: 'POST', path: '/v1/videos', query_path: '/v1/videos/{task_id}', content_path: '/v1/videos/{task_id}/content', parameters: { model: { required: true }, prompt: { required: true }, seconds: { minimum: 2, maximum: 10 }, resolution: { listed_values: ['768P'] }, content: { items: { properties: { type: { listed_values: ['image_url'] }, role: { listed_values: ['first_frame'] }, image_url: { properties: { url: { type: 'string', 'x-data-uri': true } } } } } } } }] }
   directory.models.push({ ...directory.models[0], id: 'video-b' })
   directory.models.push({ ...directory.models[0], id: 'video-c', parameters: { model: { required: true }, prompt: { required: true } } })
   let primaryUnavailable = false
@@ -86,7 +86,7 @@ it('uses the configured provider metadata, submits its selected video and safely
     expect(await readFile(explicit.path)).toEqual(video)
     expect(requests.filter(item => item.method === 'POST')[1].body.resolution).toBe('768P')
     expect(requests.find(item => item.url.endsWith('/content')).authorization).toBe('Bearer fake-key')
-    expect(requests.filter(item => item.url.endsWith('/docs-data/models.json')).every(item => !item.authorization)).toBe(true)
+    expect(requests.filter(item => item.url.endsWith('/docs-data/models.json')).every(item => item.authorization === 'Bearer fake-key')).toBe(true)
     await expect(tool.execute({ kind: 'video', prompt: 'bad', provider: 'custom', model: 'chat-only' }, exec)).rejects.toThrow(/上游生成失败/)
     await expect(tool.execute({ kind: 'video', prompt: 'denied', path: '../escape.mp4' }, exec)).rejects.toThrow(/workspace-write/)
     expect(requests.filter(item => item.method === 'POST').map(item => item.body.model)).toEqual(['video-a', 'video-a', 'chat-only'])
