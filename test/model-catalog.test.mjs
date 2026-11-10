@@ -70,6 +70,21 @@ test("a slow provider does not prevent other media catalogs from starting", asyn
   assert.equal((await pending).mediaEmpty.length, 4);
 });
 
+test("a hung provider is bounded while healthy providers still return", async () => {
+  const result = await listHostModelCatalog({ listProviders: () => [{ id: "slow" }, { id: "fast" }], listModels: provider => provider === "slow" ? new Promise(() => {}) : [{ provider, id: "m", name: "M" }], generateMedia() {}, listMediaModels: async () => [] }, { timeoutMs: 20 });
+  assert.deepEqual(result.failures, [{ id: "slow", name: "slow", message: "模型列表读取超时" }]);
+  assert.equal(result.groups.find(group => group.id === "fast").models[0].id, "m");
+  assert.ok(result.groups.find(group => group.id === "slow").models.length === 0);
+});
+
+test("caller cancellation propagates through the catalog handler", async () => {
+  const controller = new AbortController();
+  const pending = modelCatalogHandler({ listProviders: () => [{ id: "p" }], listModels: () => new Promise(() => {}), generateMedia() {}, listMediaModels: async () => [] })(new Request("http://localhost/models", { signal: controller.signal }));
+  controller.abort();
+  const response = await pending;
+  assert.equal(response.status, 499);
+});
+
 test("unavailable media discovery is unknown rather than an empty catalog", async () => {
   const result = await listHostModelCatalog({ listProviders: () => [{ id: "p" }], listModels: () => [{ provider: "p", id: "m", name: "M" }], generateMedia() {}, listMediaModels() { throw Object.assign(new Error("private"), { code: "MEDIA_CATALOG_UNAVAILABLE" }); } });
   assert.equal(result.mediaFailures[0].reason, "catalog_unavailable");

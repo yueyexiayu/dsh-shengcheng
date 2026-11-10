@@ -8,13 +8,19 @@ Choose separate default image and video models on the plugin details page, along
 
 Common parameter choices are always available, along with additional values from the selected routes' catalogs. A listed choice does not guarantee provider support; the provider determines the actual result. Automatic or blank parameters are omitted from the adapter request.
 
-Optionally choose one fallback route each for images and video. An eligible upstream failure or invalid image can trigger one fallback attempt. A video submission returning HTTP 503 also tries the configured fallback with the same reference image and conversation parameters. Other uncertain video jobs, invalid returned video, cancellation, local permissions, invalid input, and save failures do not trigger a fallback. If both attempts fail, their failure stages are reported.
+Optionally choose one fallback route each for images and video. An eligible upstream failure or invalid image can trigger one fallback attempt with the same reference image and conversation parameters. A video submission whose state is unknown — including HTTP 503 — never starts the fallback: the submission may already be accepted, so retrying would generate and bill twice. Invalid returned video, cancellation, local permissions, invalid input, and save failures do not trigger a fallback either. If both attempts fail, their failure stages are reported.
 
 Parameters explicitly given in a conversation take precedence over these defaults. A provider and model together identify the route; generation only switches to an explicitly configured fallback after an eligible failure. A missing selection prompts the user to choose a model. An empty output directory uses the session working directory, or the downloads directory if there is none.
 
 When the conversation does not explicitly specify a resolution, the saved default is sent. Choosing automatic omits the resolution; provider support is determined by the actual request.
 
+Video duration is capped at 30 seconds; the settings page, call parameters, and media validation all reject longer requests.
+
 After an HTTP 503 video submission, the plugin reports any discrepancy between the request and the current route's declared duration or resolution as a diagnostic clue. The catalog does not establish the cause or change the requested parameters.
+
+When a submission's state is unknown the job may still be running. The `shengcheng_video_jobs` tool queries, resumes, or lists the media jobs recorded on this machine: `status` reads one job, `resume` continues downloading and saving a completed job, and `list` enumerates recorded jobs. Records live in `DSH_HOME/storages/shengcheng/video-jobs` and are capped at 200.
+
+The settings panel and its actions follow the active DSH interface language (Chinese or English), falling back to Chinese rather than showing a raw key.
 
 Settings from the previous version are retained in `legacySettings`, and common image, video, and directory defaults remain in use. Old Grok/GPT model settings are not automatically mapped to different DSH routes; select image and video models again.
 
@@ -34,4 +40,4 @@ Tests use the Node test runner. Tests involving DSH filesystem permissions requi
 
 For the cross-module integration test, export `DSH_HOST_SOURCE_ROOT` pointing to a DSH source checkout with dependencies installed, then run `"$DSH_HOST_SOURCE_ROOT/node_modules/.bin/vitest" run --config test/host-vitest.config.mjs`. The test reports an error if that variable is missing.
 
-Version: 0.1.19
+Version: 0.1.20

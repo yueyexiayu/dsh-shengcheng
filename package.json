@@ -1,10 +1,16 @@
 {
   "name": "shengcheng",
-  "version": "0.1.19",
+  "version": "0.1.20",
   "private": true,
   "description": "DSH plugin: generate images and videos using configured media-capable model routes.",
   "type": "module",
   "main": "lib/index.js",
+  "scripts": {
+    "test": "node --test test/client.test.mjs test/jobs.test.mjs test/model-catalog.test.mjs test/network.test.mjs test/parse.test.mjs test/settings.test.mjs test/storage.test.mjs test/tools.test.mjs test/validate-media.test.mjs",
+    "check": "node --check lib/index.js && node --check lib/tools.js && node --check lib/settings.js && node --check lib/jobs.js && node --check lib/model-catalog.js && node --check lib/network.js && node --check lib/storage.js && node --check lib/validate-media.js",
+    "test:official": "node --test test/reference.test.mjs test/official-fs.test.mjs",
+    "test:host": "vitest run --config test/host-vitest.config.mjs"
+  },
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
@@ -16,7 +22,7 @@
     },
     "client": {
       "platform": "web",
-      "inject": ["@deepseek-ai/dsh-client-ui-plugin-manager"]
+      "inject": ["@deepseek-ai/dsh-client-locale", "@deepseek-ai/dsh-client-ui-plugin-manager"]
     }
   }
 }

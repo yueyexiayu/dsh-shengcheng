@@ -4,6 +4,7 @@ import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import { registerShengchengTools } from '../lib/tools.js'
+import { VideoJobStore } from '../lib/jobs.js'
 import { listHostModelCatalog } from '../lib/model-catalog.js'
 import { preflightMediaValidation } from '../lib/validate-media.js'
 import { execFileSync } from 'node:child_process'
@@ -27,6 +28,7 @@ it('uses the configured provider metadata, submits its selected video and safely
   directory.models.push({ ...directory.models[0], id: 'video-b' })
   directory.models.push({ ...directory.models[0], id: 'video-c', parameters: { model: { required: true }, prompt: { required: true } } })
   let primaryUnavailable = false
+  let primaryUncertain = false
   vi.stubGlobal('fetch', async (url, options) => {
     const headers = new Headers(options.headers)
     requests.push({ url: String(url), method: options.method, authorization: headers.get('authorization'), body: options.body && JSON.parse(options.body) })
@@ -35,7 +37,8 @@ it('uses the configured provider metadata, submits its selected video and safely
     if (url === 'https://provider.example/v1/videos' && options.method === 'POST') {
       const model = JSON.parse(options.body).model
       if (model === 'chat-only') return Response.json({ error: 'private provider response' }, { status: 400 })
-      if (model === 'video-a' && primaryUnavailable) return Response.json({ error: 'private unavailable details' }, { status: 503 })
+      if (model === 'video-a' && primaryUncertain) return Response.json({ error: 'private uncertain details' }, { status: 503 })
+      if (model === 'video-a' && primaryUnavailable) return Response.json({ error: 'private rejected details' }, { status: 400 })
       return Response.json({ id: 'job-1' })
     }
     if (url === 'https://provider.example/v1/videos/job-1') return Response.json({ id: 'job-1', status: 'completed' })
@@ -43,6 +46,7 @@ it('uses the configured provider metadata, submits its selected video and safely
     throw new Error('unexpected network call')
   })
   const root = await mkdtemp(join(tmpdir(), 'shengcheng-host-integration-'))
+  const videoJobs = new VideoJobStore({ root: join(root, 'video-jobs') })
   const cwd = join(root, 'workspace'); await mkdir(cwd)
   const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', 'base64')
   await writeFile(join(cwd, 'reference.png'), image)
@@ -51,10 +55,10 @@ it('uses the configured provider metadata, submits its selected video and safely
   const adapter = new PiAiAdapter({ profiles: () => profiles, resolveApiKey: () => Promise.resolve('fake-key'), auth: memoryAuth() })
   const dispose = host.llm.registerAdapter(['custom'], adapter)
   const canonical = async path => { try { return await realpath(path) } catch (error) { if (error.code !== 'ENOENT') throw error; return join(await canonical(dirname(path)), path.slice(dirname(path).length + 1)) } }
-  let tool
+  const tools: Record<string, any> = {}
   const ctx = {
     llm: host.llm,
-    tools: { register: value => { tool = value } },
+    tools: { register: value => { tools[value.name] = value } },
     sandboxPolicy: { resolve: ({ session }) => ({ mode: 'workspace-write', workspaceRoot: session.header.cwd }) },
     fs: {
       resolve: async (path, options) => ({ displayPath: resolve(options?.cwd || cwd, path), targetKey: await canonical(resolve(options?.cwd || cwd, path)) }),
@@ -70,12 +74,14 @@ it('uses the configured provider metadata, submits its selected video and safely
     },
   }
   try {
+    let tool
     const catalog = await listHostModelCatalog(host.llm)
     const group = catalog.groups.find(group => group.id === 'custom')
     expect(group.models.find(model => model.id === 'video-a')).toMatchObject({ video: 'unverified', image: 'unavailable', videoParameters: { duration: { min: 2, max: 10 }, resolutions: ['768p'] } })
     expect(group.models.find(model => model.id === 'chat-only').video).toBe('unavailable')
     expect(catalog.mediaFailures).toEqual([])
-    registerShengchengTools(ctx, async () => ({ videoRoute: { provider: 'custom', model: 'video-a' }, videoResolution: '720p', videoDuration: 5, outputDirectory: '' }))
+    registerShengchengTools(ctx, async () => ({ videoRoute: { provider: 'custom', model: 'video-a' }, videoResolution: '720p', videoDuration: 5, outputDirectory: '' }), { videoJobs })
+    tool = tools.shengcheng
     const exec = { agent: { session: { id: 'session-fixture', header: { cwd } } }, signal: new AbortController().signal }
     const result = await tool.execute({ kind: 'video', prompt: 'move fixture', image_path: 'reference.png', path: 'result.mp4' }, exec)
     expect(result).toMatchObject({ provider: 'custom', model: 'video-a', kind: 'video' })
@@ -92,15 +98,25 @@ it('uses the configured provider metadata, submits its selected video and safely
     expect(requests.filter(item => item.method === 'POST').map(item => item.body.model)).toEqual(['video-a', 'video-a', 'chat-only'])
     primaryUnavailable = true
     requests.length = 0
-    registerShengchengTools(ctx, async () => ({ videoRoute: { provider: 'custom', model: 'video-a' }, videoFallbackRoute: { provider: 'custom', model: 'video-b' }, videoResolution: '720p', videoDuration: 5, outputDirectory: '' }))
+    registerShengchengTools(ctx, async () => ({ videoRoute: { provider: 'custom', model: 'video-a' }, videoFallbackRoute: { provider: 'custom', model: 'video-b' }, videoResolution: '720p', videoDuration: 5, outputDirectory: '' }), { videoJobs })
+    tool = tools.shengcheng
     const recovered = await tool.execute({ kind: 'video', prompt: 'move fixture', image_path: 'reference.png', duration: 3, resolution: '768p', path: 'fallback-result.mp4' }, exec)
     expect(recovered).toMatchObject({ provider: 'custom', model: 'video-b', kind: 'video' })
     expect(await readFile(recovered.path)).toEqual(video)
     const submitted = requests.filter(item => item.method === 'POST')
     expect(submitted.map(item => item.body.model)).toEqual(['video-a', 'video-b'])
     for (const item of submitted) expect(item.body).toMatchObject({ seconds: 3, resolution: '768P', content: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${image.toString('base64')}` }, role: 'first_frame' }] })
+    primaryUnavailable = false
+    primaryUncertain = true
     requests.length = 0
-    registerShengchengTools(ctx, async () => ({ videoRoute: { provider: 'custom', model: 'video-a' }, videoFallbackRoute: { provider: 'custom', model: 'video-c' }, outputDirectory: '' }))
+    await expect(tool.execute({ kind: 'video', prompt: 'move fixture', image_path: 'reference.png', duration: 3, resolution: '768p', path: 'uncertain.mp4' }, exec)).rejects.toThrow(/HTTP 503.*未自动切换兜底|未自动切换兜底.*HTTP 503/s)
+    expect(requests.filter(item => item.method === 'POST').map(item => item.body.model)).toEqual(['video-a'])
+    expect(requests.some(item => String(item.url).includes('/content'))).toBe(false)
+    primaryUncertain = false
+    primaryUnavailable = true
+    requests.length = 0
+    registerShengchengTools(ctx, async () => ({ videoRoute: { provider: 'custom', model: 'video-a' }, videoFallbackRoute: { provider: 'custom', model: 'video-c' }, outputDirectory: '' }), { videoJobs })
+    tool = tools.shengcheng
     await expect(tool.execute({ kind: 'video', prompt: 'move fixture', image_path: 'reference.png' }, exec)).rejects.toThrow(/兜底模型 custom\/video-c.*MEDIA_REFERENCE_UNAVAILABLE/)
     expect(requests.filter(item => item.method === 'POST').map(item => item.body.model)).toEqual(['video-a'])
   } finally { dispose(); await host.fiber.dispose(); await rm(root, { recursive: true, force: true }) }

@@ -8,9 +8,10 @@ const legacy = { provider: 'gpt', imageAspectRatio: '3:2', imageQuality: 'medium
 const defaults = { imageRoute: null, videoRoute: null, imageFallbackRoute: null, videoFallbackRoute: null, imageAspectRatio: '3:2', imageQuality: 'medium', videoResolution: '720p', videoDuration: 5, outputDirectory: 'output', legacySettings: legacy };
 const catalog = { groups: [{ id: 'p1', name: 'Provider One', models: [{ id: 'same', name: 'Same', image: 'declared', video: 'unavailable', imageParameters: { aspectRatios: ['1:1', '3:2'], qualities: ['low', 'medium', 'high'] } }, { id: 'video', name: 'Video', image: 'unavailable', video: 'unverified', videoParameters: { resolutions: ['480p', '720p'], duration: { min: 1, max: 15 } } }] }, { id: 'p2', name: 'Provider Two', models: [{ id: 'same', name: 'Same', image: 'unverified', video: 'unavailable', imageParameters: { aspectRatios: ['1:1'], qualities: ['low'] } }] }], failures: [], mediaFailures: [] };
 
-function harness(handler) {
+function harness(handler, options = {}) {
   let plugin, component, tree, dirty = true, cursor = 0;
   const hooks = [], effects = [], calls = [];
+  const registered = [];
   const React = {
     createElement(type, props, ...children) { return { type, props: { ...props, children: children.flat(Infinity) } }; },
     useState(initial) { const i = cursor++; if (!(i in hooks)) hooks[i] = initial; return [hooks[i], value => { hooks[i] = typeof value === 'function' ? value(hooks[i]) : value; dirty = true; }]; },
@@ -20,14 +21,28 @@ function harness(handler) {
     const call = { url, method: options.method ?? 'GET', body: options.body && JSON.parse(options.body) }; calls.push(call);
     const body = await handler(call); return { ok: body.ok, status: body.ok ? 200 : 503, json: async () => body };
   } });
-  plugin.apply({ slots: { inject(name, callback) { assert.equal(name, 'plugins.bundle.config'); callback(); }, register(options, value) { assert.equal(options.key, 'shengcheng'); component = value; } } });
+  const slots = { inject(name, callback) { assert.equal(name, 'plugins.bundle.config'); callback(); }, register(options, value) { assert.equal(options.key, 'shengcheng'); component = value; } };
+  const ctx = { slots };
+  if (options.locale) {
+    const dicts = {};
+    ctx.locale = {
+      register(ns, dictionaries) { if (options.register === false) return () => {}; registered.push({ ns, dictionaries }); dicts[ns] = dictionaries; return () => { delete dicts[ns]; }; },
+      bind: ns => (key, params) => {
+        const template = dicts[ns]?.[options.locale]?.[key];
+        if (template === undefined) return key;
+        return params ? template.replace(/\{(\w+)\}/g, (match, name) => name in params ? String(params[name]) : match) : template;
+      },
+    };
+    ctx.effect = fn => { effects.push(fn); };
+  }
+  plugin.apply(ctx);
   function render() { dirty = false; cursor = 0; tree = component(); while (effects.length) effects.shift()(); }
   function nodes(node = tree) { if (!node || typeof node !== 'object') return []; return [node, ...(node.props.children || []).flatMap(nodes)]; }
   function text(node) { return typeof node === 'object' && node !== null ? (node.props.children || []).map(text).join('') : String(node ?? ''); }
   function label(name) { const item = nodes().find(node => node.type === 'label' && text(node).startsWith(name)); assert.ok(item, name); return item.props.children.find(child => child && typeof child === 'object'); }
   function button(name) { const item = nodes().find(node => node.type === 'button' && text(node) === name); assert.ok(item, name); return item; }
   async function settle() { for (let i = 0; i < 5; i++) { if (dirty) render(); await new Promise(resolve => setImmediate(resolve)); } if (dirty) render(); }
-  return { calls, settle, label, button, text: () => text(tree), async change(name, value) { label(name).props.onChange({ target: { value } }); await settle(); }, async submit() { await nodes().find(node => node.type === 'form').props.onSubmit({ preventDefault() {} }); await settle(); } };
+  return { calls, registered, settle, label, button, text: () => text(tree), async change(name, value) { label(name).props.onChange({ target: { value } }); await settle(); }, async submit() { await nodes().find(node => node.type === 'form').props.onSubmit({ preventDefault() {} }); await settle(); } };
 }
 
 test('settings no longer request or show video task protection', async () => {
@@ -71,7 +86,10 @@ test('switching routes preserves defaults and offers common values without asser
   const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog } : { ok: true, settings: defaults });
   await app.settle();
   await app.change('默认图片模型', JSON.stringify(['p2', 'same']));
-  assert.match(app.text(), /是否支持以提供方实际调用结果为准/);
+  assert.match(app.text(), /实际支持以提供方调用结果为准/);
+  const imageOptions = app.label('默认图片模型').props.children.filter(item => item?.type === 'option' && item.props.value);
+  assert.match(imageOptions[0].props.children.join(''), /目录已声明支持/);
+  assert.match(imageOptions.at(-1).props.children.join(''), /目录未声明支持/);
   assert.equal(app.button('保存设置').props.disabled, false);
   assert.equal(app.label('默认图片比例').props.value, '3:2');
   assert.notEqual(app.label('默认图片比例').props.children.find(item => item?.props?.value === '16:9').props.disabled, true);
@@ -149,6 +167,39 @@ test('media catalog failures do not produce distracting per-provider errors', as
   const result = { groups: [], failures: [], mediaFailures: [{ provider: 'a', kind: 'image', reason: 'call_failed' }, { provider: 'b', kind: 'video', reason: 'invalid_response' }, { provider: 'xai', kind: 'image', reason: 'missing_credential' }, { provider: 'c', kind: 'video', reason: 'catalog_unavailable' }], mediaEmpty: [] };
   const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog: result } : { ok: true, settings: defaults });
   await app.settle();
-  assert.match(app.text(), /可自行选择模型和常规参数/);
+  assert.match(app.text(), /目录未知或未列出的模型仍可选择/);
   assert.doesNotMatch(app.text(), /媒体目录调用失败|媒体目录返回格式无效|媒体 API 凭据不可用/);
+});
+
+test('the panel registers its dictionaries and follows the active locale', async () => {
+  const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog } : { ok: true, revision: 'r1', settings: defaults }, { locale: 'en' });
+  await app.settle();
+  assert.deepEqual(app.registered.map(item => item.ns), ['shengcheng']);
+  assert.equal(app.registered[0].dictionaries.zh['action.save'], '保存设置');
+  assert.equal(app.registered[0].dictionaries.en['action.save'], 'Save settings');
+  assert.match(app.text(), /Generation defaults/);
+  assert.equal(app.button('Save settings').props.disabled, true);
+  assert.doesNotMatch(app.text(), /[\u4e00-\u9fff]/);
+});
+
+test('an unresolvable key falls back to Chinese instead of surfacing a raw key', async () => {
+  const app = harness(call => call.url.endsWith('/models') ? { ok: true, catalog } : { ok: true, revision: 'r1', settings: defaults }, { locale: 'zh' });
+  await app.settle();
+  assert.match(app.text(), /生成默认设置/);
+  assert.equal(app.registered[0].dictionaries.zh['action.save'], '保存设置');
+  // A locale service whose registration never lands still renders Chinese: the
+  // bound translator returns the key, and the panel must not show that.
+  const bare = harness(call => call.url.endsWith('/models') ? { ok: true, catalog } : { ok: true, revision: 'r1', settings: defaults }, { locale: 'en', register: false });
+  await bare.settle();
+  assert.equal(bare.button('保存设置').props.disabled, true);
+  assert.doesNotMatch(bare.text(), /action\.save|section\.title/);
+});
+
+test('host error codes produce a localized message and fall back to host text', async () => {
+  const known = harness(() => ({ ok: false, code: 'settings_conflict', error: '设置已被其他窗口或 Host 修改，请重新加载后再保存' }), { locale: 'en' });
+  await known.settle();
+  assert.match(known.text(), /Another window or the Host changed the settings/);
+  const unknown = harness(() => ({ ok: false, code: 'unknown_failure', error: '宿主返回的原始说明' }), { locale: 'en' });
+  await unknown.settle();
+  assert.match(unknown.text(), /宿主返回的原始说明/);
 });

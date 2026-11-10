@@ -4,16 +4,17 @@ import { generationSignal, registerShengchengTools, resolveGenerationDefaults, r
 import { apply } from "../lib/index.js";
 
 test("registers the generation tool and the two authenticated Host routes", () => {
-  const names = [], paths = [];
-  apply({ llm: {}, tools: { register(tool) { names.push(tool.name); assert.equal(typeof tool.execute, "function"); assert.equal(tool.timeoutMs, 1_210_000); } }, connection: { fetch: { register(route) { assert.equal(route.requestBody, "buffered"); paths.push(route.path); } } } });
-  assert.deepEqual(names, ["shengcheng"]);
+  const tools = [], paths = [];
+  apply({ llm: {}, tools: { register(tool) { tools.push(tool); assert.equal(typeof tool.execute, "function"); } }, connection: { fetch: { register(route) { assert.equal(route.requestBody, "buffered"); paths.push(route.path); } } } });
+  assert.deepEqual(tools.map(tool => tool.name), ["shengcheng", "shengcheng_video_jobs"]);
+  assert.deepEqual(tools.map(tool => tool.timeoutMs), [1_210_000, 630_000]);
   assert.deepEqual(paths, ["/api/shengcheng/settings", "/api/shengcheng/models"]);
   assert.throws(() => registerShengchengTools({}), TypeError);
 });
 
 test("tool describes explicit user parameters as higher priority than defaults", () => {
   let tool;
-  registerShengchengTools({ tools: { register(value) { tool = value; } } });
+  registerShengchengTools({ tools: { register(value) { if (value.name === "shengcheng") tool = value; } } });
   assert.match(tool.description, /User-requested parameters.*take precedence/);
   assert.match(tool.description, /prior assistant guesses.*not user requirements/);
   assert.match(tool.parameters.properties.resolution.description, /explicitly requested by the user/);

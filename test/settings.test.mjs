@@ -12,11 +12,15 @@ test("settings persist exact DSH routes and do not overwrite corrupt data", asyn
     const get = () => handler(new Request("http://localhost/api/shengcheng/settings"));
     const post = async settings => { const revision = (await (await get()).json()).revision; return handler(new Request("http://localhost/api/shengcheng/settings", { method: "POST", body: JSON.stringify({ settings, revision }) })); };
     assert.deepEqual((await (await get()).json()).settings, DEFAULT_SETTINGS);
+    const rejected = await post({ ...DEFAULT_SETTINGS, videoDuration: 31 }), rejectedBody = await rejected.json();
+    assert.equal(rejectedBody.code, "video_duration_invalid");
+    assert.deepEqual(rejectedBody.params, { max: 30 });
+    assert.equal((await handler(new Request("http://localhost", { method: "POST", body: "{" }))).status, 400);
     const chosen = { ...DEFAULT_SETTINGS, imageRoute: { provider: "gateway-a", model: "image-1" }, videoRoute: { provider: "gateway-b", model: "video-2" }, videoDuration: 8, outputDirectory: "output" };
     assert.equal((await post(chosen)).status, 200);
     assert.deepEqual(await loadSettings(path), chosen);
     assert.equal((await stat(path)).mode & 0o777, 0o600);
-    assert.equal((await post({ ...chosen, videoDuration: 3601 })).status, 400);
+    assert.equal((await post({ ...chosen, videoDuration: 31 })).status, 400);
     assert.deepEqual(await loadSettings(path), chosen);
     await writeFile(path, "broken", "utf8");
     assert.equal((await get()).status, 500);
@@ -64,7 +68,18 @@ test("incomplete old settings are never overwritten and stale cross-Host saves a
 });
 
 test("invalid or partial model routes are rejected", () => {
-  for (const imageRoute of [{ provider: "p" }, { provider: "", model: "m" }, { provider: "p", model: "m\n" }, "p/m"]) assert.throws(() => validateSettings({ ...DEFAULT_SETTINGS, imageRoute }));
+  for (const imageRoute of [{ provider: "p" }, { provider: "", model: "m" }, { provider: " ", model: "m" }, { provider: "p", model: "m\n" }, "p/m"]) assert.throws(() => validateSettings({ ...DEFAULT_SETTINGS, imageRoute }));
+  assert.throws(() => validateSettings({ ...DEFAULT_SETTINGS, videoFallbackRoute: { provider: "p", model: "fallback" } }), /必须先选择主模型/);
+  assert.throws(() => validateSettings({ ...DEFAULT_SETTINGS, imageRoute: { provider: "p", model: "same" }, imageFallbackRoute: { provider: "p", model: "same" } }), /不能与主模型相同/);
+  assert.throws(() => validateSettings({ ...DEFAULT_SETTINGS, imageAspectRatio: "   " }), /默认媒体参数无效/);
+});
+
+test("model routes and defaults are normalized before persistence", () => {
+  const settings = validateSettings({ ...DEFAULT_SETTINGS, imageRoute: { provider: " p ", model: " m " }, imageAspectRatio: " 3:2 ", videoResolution: " 720p ", outputDirectory: " output " });
+  assert.deepEqual(settings.imageRoute, { provider: "p", model: "m" });
+  assert.equal(settings.imageAspectRatio, "3:2");
+  assert.equal(settings.videoResolution, "720p");
+  assert.equal(settings.outputDirectory, "output");
 });
 
 test("settings from before fallback support gain empty fallback routes without writing", async () => {

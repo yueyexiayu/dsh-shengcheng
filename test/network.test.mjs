@@ -15,6 +15,7 @@ function mockNetwork(t, replies, records = [{ address: "93.184.216.34", family: 
     request.end = () => queueMicrotask(() => {
       const reply = replies.shift();
       assert.ok(reply, "unexpected request must never reach the real network");
+      if (reply.error) { request.emit("error", reply.error); return; }
       const response = Readable.from(reply.chunks || [Buffer.from("valid-body")]);
       response.statusCode = reply.status || 200;
       response.headers = reply.headers || {};
@@ -54,6 +55,19 @@ test("connection lookup is pinned while URL hostname and TLS validation remain i
   const value = await new Promise((resolve, reject) => options.lookup("cdn.example", {}, (e, address, family) => e ? reject(e) : resolve({ address, family })));
   assert.deepEqual(value, { address: "93.184.216.34", family: 4 });
   assert.equal(mock.lookups.length, 1, "socket lookup must not re-resolve potentially rebound DNS");
+});
+
+test("a failed IPv6 connection retries the next public IPv4 address without re-resolving", async t => {
+  const mock = mockNetwork(t, [
+    { error: Object.assign(new Error("network unreachable"), { code: "ENETUNREACH" }) },
+    {},
+  ], [{ address: "2606:4700:4700::1111", family: 6 }, { address: "93.184.216.34", family: 4 }]);
+  assert.equal((await downloadBytes("https://cdn.example/a", signal(), 100)).toString(), "valid-body");
+  assert.equal(mock.calls.length, 2);
+  assert.equal(mock.lookups.length, 1);
+  const addresses = [];
+  for (const call of mock.calls) await new Promise((resolve, reject) => call.options.lookup("cdn.example", {}, (error, address) => error ? reject(error) : (addresses.push(address), resolve())));
+  assert.deepEqual(addresses, ["2606:4700:4700::1111", "93.184.216.34"]);
 });
 
 test("every redirect is validated and private redirects never open a socket", async t => {
