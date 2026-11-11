@@ -19,6 +19,8 @@ test("reference file returns validated bytes and rejects empty, fake and directo
   const result = await readReferenceImage(path, dir, undefined, undefined, fs);
   assert.deepEqual(result.bytes, png);
   assert.equal(result.mimeType, "image/png");
+  assert.equal(result.width, 1);
+  assert.equal(result.height, 1);
   for (const bytes of [Buffer.alloc(0), Buffer.from("<html>error</html>"), png.subarray(0, 12)]) {
     await writeFile(path, bytes);
     await assert.rejects(readReferenceImage(path, dir, undefined, undefined, fs), /媒体|图片/);

@@ -44,9 +44,18 @@ test("keeps provider/model identity and explicit route takes precedence", () => 
 });
 
 test("explicit per-call settings override persisted defaults", () => {
-  const settings = { imageAspectRatio: "3:2", imageQuality: "medium", videoResolution: "720p", videoDuration: 5 };
+  const settings = { imageAspectRatio: "3:2", imageSizeMode: "configured", imageQuality: "medium", videoResolution: "720p", videoDuration: 5 };
   assert.deepEqual(resolveGenerationDefaults({ prompt: "p" }, settings), { prompt: "p", aspect_ratio: "3:2", quality: "medium" });
   assert.deepEqual(resolveGenerationDefaults({ prompt: "p", size: "custom", quality: "high" }, settings), { prompt: "p", size: "custom", quality: "high" });
   assert.deepEqual(resolveGenerationDefaults({ kind: "video", duration: 3 }, settings), { kind: "video", duration: 3, resolution: "720p" });
   assert.deepEqual(resolveGenerationDefaults({ kind: "video", resolution: "1080p", duration: 3 }, settings), { kind: "video", resolution: "1080p", duration: 3 });
+});
+
+test("reference-size mode uses the input dimensions unless the call requests a size", () => {
+  const settings = { imageAspectRatio: "9:16", imageSizeMode: "reference", imageQuality: "medium" };
+  const reference = { width: 1024, height: 1024 };
+  assert.deepEqual(resolveGenerationDefaults({ prompt: "p" }, settings, reference), { prompt: "p", size: "1024x1024", quality: "medium" });
+  assert.deepEqual(resolveGenerationDefaults({ prompt: "p", aspect_ratio: "3:2" }, settings, reference), { prompt: "p", aspect_ratio: "3:2", quality: "medium" });
+  assert.deepEqual(resolveGenerationDefaults({ prompt: "p", size: "640x480" }, settings, reference), { prompt: "p", size: "640x480", quality: "medium" });
+  assert.deepEqual(resolveGenerationDefaults({ prompt: "p" }, settings), { prompt: "p", aspect_ratio: "9:16", quality: "medium" });
 });

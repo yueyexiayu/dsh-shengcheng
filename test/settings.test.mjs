@@ -36,7 +36,7 @@ test("legacy choices are preserved losslessly but not silently mapped to DSH rou
     const original = JSON.stringify(legacy);
     await writeFile(path, original);
     const current = await loadSettings(path);
-    assert.deepEqual(current, { imageRoute: null, videoRoute: null, imageFallbackRoute: null, videoFallbackRoute: null, imageAspectRatio: "16:9", imageQuality: "medium", videoResolution: "1080p", videoDuration: 9, outputDirectory: "output", legacySettings: legacy });
+    assert.deepEqual(current, { imageRoute: null, videoRoute: null, imageFallbackRoute: null, videoFallbackRoute: null, imageAspectRatio: "16:9", imageSizeMode: "configured", imageQuality: "medium", videoResolution: "1080p", videoDuration: 9, outputDirectory: "output", legacySettings: legacy });
     assert.equal(await readFile(path, "utf8"), original);
     const handler = settingsHandler(path), next = { ...current, imageRoute: { provider: "route", model: "image" } };
     const revision = (await (await handler(new Request("http://localhost"))).json()).revision;
@@ -72,6 +72,7 @@ test("invalid or partial model routes are rejected", () => {
   assert.throws(() => validateSettings({ ...DEFAULT_SETTINGS, videoFallbackRoute: { provider: "p", model: "fallback" } }), /必须先选择主模型/);
   assert.throws(() => validateSettings({ ...DEFAULT_SETTINGS, imageRoute: { provider: "p", model: "same" }, imageFallbackRoute: { provider: "p", model: "same" } }), /不能与主模型相同/);
   assert.throws(() => validateSettings({ ...DEFAULT_SETTINGS, imageAspectRatio: "   " }), /默认媒体参数无效/);
+  assert.throws(() => validateSettings({ ...DEFAULT_SETTINGS, imageSizeMode: "custom" }), /图片尺寸策略无效/);
 });
 
 test("model routes and defaults are normalized before persistence", () => {
@@ -87,6 +88,17 @@ test("settings from before fallback support gain empty fallback routes without w
   try {
     const path = join(root, "settings.json");
     const { imageFallbackRoute, videoFallbackRoute, ...old } = DEFAULT_SETTINGS;
+    const body = JSON.stringify(old); await writeFile(path, body);
+    assert.deepEqual(await loadSettings(path), DEFAULT_SETTINGS);
+    assert.equal(await readFile(path, "utf8"), body);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("settings from before image-size mode support default to the configured ratio without writing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shengcheng-settings-"));
+  try {
+    const path = join(root, "settings.json");
+    const { imageSizeMode, ...old } = DEFAULT_SETTINGS;
     const body = JSON.stringify(old); await writeFile(path, body);
     assert.deepEqual(await loadSettings(path), DEFAULT_SETTINGS);
     assert.equal(await readFile(path, "utf8"), body);

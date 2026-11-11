@@ -6,7 +6,7 @@ import { join, dirname, resolve, relative, isAbsolute } from "node:path";
 import { prepareOutput, resolveOutPath, sessionCwd, referencePath } from "../lib/storage.js";
 import { registerShengchengTools } from "../lib/tools.js";
 import { execFileSync } from "node:child_process";
-import { preflightMediaValidation } from "../lib/validate-media.js";
+import { preflightMediaValidation, validateMedia } from "../lib/validate-media.js";
 import { MAX_IMAGE_BYTES } from "../lib/parse.js";
 import { VideoJobStore } from "../lib/jobs.js";
 
@@ -211,6 +211,20 @@ test("user-selected model is sent even when media discovery is unavailable or em
   assert.equal(result.model, "selected-by-user");
   assert.equal(discoveries, 0);
   assert.equal(dispatched, 1);
+});
+
+test("reference-size mode sends the input dimensions and publishes exactly that size", async t => {
+  const f = await toolFixture(t, "workspace-write", async () => ({ imageRoute: { provider: "provider-a", model: "image-model" }, imageAspectRatio: "9:16", imageSizeMode: "reference", imageQuality: "medium", outputDirectory: "" }));
+  const { ffmpeg } = await preflightMediaValidation();
+  const makeImage = size => execFileSync(ffmpeg, ["-v", "error", "-f", "lavfi", "-i", `color=c=red:s=${size}`, "-frames:v", "1", "-c:v", "png", "-f", "image2pipe", "pipe:1"]);
+  await writeFile(join(f.cwd, "reference.png"), makeImage("32x16"));
+  const generatedImage = makeImage("64x32");
+  let request;
+  f.ctx.llm.generateMedia = async options => { request = options; return { provider: options.provider, model: options.model, kind: options.kind, bytes: generatedImage }; };
+  const result = await f.tool.execute({ prompt: "edit", image_path: "reference.png", path: "edited.png" }, f.exec);
+  assert.equal(request.size, "32x16");
+  assert.equal(request.aspectRatio, undefined);
+  assert.deepEqual(await validateMedia(await readFile(result.path), "image"), { ext: "png", width: 32, height: 16 });
 });
 
 test("unsupported route, mismatched response, or adapter failure never silently falls back", async t => {

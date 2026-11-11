@@ -4,7 +4,9 @@ A DSH plugin that generates images or video using model routes configured in DSH
 
 ## Settings
 
-Choose separate default image and video models on the plugin details page, along with the aspect ratio, image quality, video resolution, duration, and output directory. Choose any model listed in the DSH catalog; the provider and actual invocation determine whether generation succeeds. Save after making changes.
+Choose separate default image and video models on the plugin details page, along with the aspect ratio, image size policy, image quality, video resolution, duration, and output directory. Choose any model listed in the DSH catalog; the provider and actual invocation determine whether generation succeeds. Save after making changes.
+
+The image size policy can use the configured aspect ratio or match the reference image size. Match mode applies only to image edits when the conversation does not explicitly set `size` or `aspect_ratio`; a mismatched output is normalized through FFmpeg to PNG at the exact reference dimensions.
 
 Common parameter choices are always available, along with additional values from the selected routes' catalogs. A listed choice does not guarantee provider support; the provider determines the actual result. Automatic or blank parameters are omitted from the adapter request.
 
@@ -40,4 +42,4 @@ Tests use the Node test runner. Tests involving DSH filesystem permissions requi
 
 For the cross-module integration test, export `DSH_HOST_SOURCE_ROOT` pointing to a DSH source checkout with dependencies installed, then run `"$DSH_HOST_SOURCE_ROOT/node_modules/.bin/vitest" run --config test/host-vitest.config.mjs`. The test reports an error if that variable is missing.
 
-Version: 0.1.20
+Version: 0.1.21

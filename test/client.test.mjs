@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 
 const code = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8');
 const legacy = { provider: 'gpt', imageAspectRatio: '3:2', imageQuality: 'medium', videoResolution: '720p', videoDuration: 5, outputDirectory: 'output', grokImageModel: 'old-grok', gptImageModel: 'old-gpt', grokVideoModel: 'old-video' };
-const defaults = { imageRoute: null, videoRoute: null, imageFallbackRoute: null, videoFallbackRoute: null, imageAspectRatio: '3:2', imageQuality: 'medium', videoResolution: '720p', videoDuration: 5, outputDirectory: 'output', legacySettings: legacy };
+const defaults = { imageRoute: null, videoRoute: null, imageFallbackRoute: null, videoFallbackRoute: null, imageAspectRatio: '3:2', imageSizeMode: 'configured', imageQuality: 'medium', videoResolution: '720p', videoDuration: 5, outputDirectory: 'output', legacySettings: legacy };
 const catalog = { groups: [{ id: 'p1', name: 'Provider One', models: [{ id: 'same', name: 'Same', image: 'declared', video: 'unavailable', imageParameters: { aspectRatios: ['1:1', '3:2'], qualities: ['low', 'medium', 'high'] } }, { id: 'video', name: 'Video', image: 'unavailable', video: 'unverified', videoParameters: { resolutions: ['480p', '720p'], duration: { min: 1, max: 15 } } }] }, { id: 'p2', name: 'Provider Two', models: [{ id: 'same', name: 'Same', image: 'unverified', video: 'unavailable', imageParameters: { aspectRatios: ['1:1'], qualities: ['low'] } }] }], failures: [], mediaFailures: [] };
 
 function harness(handler, options = {}) {
@@ -120,12 +120,13 @@ test('common options remain available without metadata and include extra provide
     for (const value of values) assert.ok(options.find(item => item?.props?.value === value), `${field}: ${value}`);
   }
   await app.change('默认图片比例', '16:9');
+  await app.change('图片尺寸策略', 'reference');
   await app.change('默认图片质量', 'high');
   await app.change('默认视频分辨率', '1080p');
   assert.equal(app.button('保存设置').props.disabled, false);
   await app.submit();
   const saved = app.calls.find(call => call.method === 'POST').body.settings;
-  assert.equal(saved.imageAspectRatio, '16:9'); assert.equal(saved.imageQuality, 'high'); assert.equal(saved.videoResolution, '1080p');
+  assert.equal(saved.imageAspectRatio, '16:9'); assert.equal(saved.imageSizeMode, 'reference'); assert.equal(saved.imageQuality, 'high'); assert.equal(saved.videoResolution, '1080p');
 });
 
 test('saved resolution remains selected without silent automatic adjustment', async () => {

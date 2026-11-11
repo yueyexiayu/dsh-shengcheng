@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { mkdtemp, readFile, readdir, writeFile, rm } from "node:fs/promises";
 import { join, dirname, basename, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { validateMedia, preflightMediaValidation } from "../lib/validate-media.js";
+import { validateMedia, preflightMediaValidation, resizeImage } from "../lib/validate-media.js";
 
 const exec = promisify(execFile);
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64");
@@ -23,6 +23,14 @@ test("actual decoder accepts valid PNG JPEG WebP and GIF", async () => {
     const bytes = await generated(["-f", "lavfi", "-i", "color=c=red:s=16x16", "-frames:v", "1", "-c:v", codec, "-f", "image2pipe", "pipe:1"]);
     assert.equal((await validateMedia(bytes, "image")).ext, ext);
   }
+});
+
+test("reference-size normalization produces exact validated dimensions", async () => {
+  const source = await generated(["-f", "lavfi", "-i", "color=c=red:s=32x16", "-frames:v", "1", "-c:v", "png", "-f", "image2pipe", "pipe:1"]);
+  const resized = await resizeImage(source, 24, 24);
+  assert.deepEqual(await validateMedia(resized, "image"), { ext: "png", width: 24, height: 24 });
+  const webp = Buffer.from("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA", "base64");
+  assert.deepEqual(await validateMedia(await resizeImage(webp, 8, 8), "image"), { ext: "png", width: 8, height: 8 });
 });
 
 test("12-byte signatures and truncated image data are not valid images", async () => {
