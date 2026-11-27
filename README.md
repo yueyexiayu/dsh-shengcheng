@@ -2,6 +2,18 @@
 
 DSH 插件：使用 DSH 中配置的模型路线生成图片或视频，并将结果保存到本地。
 
+## 安装
+
+本插件是 DSH 桌面端的本地插件（以 bundle 形式加载），不通过 npm 发布：
+
+1. 把仓库放到 `$DSH_HOME/plugins/shengcheng`（默认 `~/.dsh/plugins/shengcheng`）。
+2. 在 `$DSH_HOME/profiles/desktop/package.json` 的 `dependencies` 里加 `"shengcheng": "link:/绝对路径/shengcheng"`（或用 `file:` 指向本目录）。
+3. 在同一文件的 `dsh.profile.bundles` 数组里加入 `"shengcheng"`；包内 `cordis.patch.yml` 已声明 `insert`。
+4. 重启 DSH 桌面端使其加载（重启由使用者人工执行）；插件详情页出现「生成」即加载成功。
+5. 运行前提见下面「运行条件」：支持 `generateMedia` 的 Host、已配置的提供方凭据、可用的 FFmpeg。
+
+依赖声明：客户端运行时 `react` 是可选 peer 依赖（由 DSH 前端注入）；`vitest` 是 devDependency，只用于 `npm run test:host`。`@deepseek-ai/cordis`、`@deepseek-ai/dsh-llm`、`@deepseek-ai/dsh-llm-pi-ai` 只由 DSH 宿主与 `DSH_HOST_SOURCE_ROOT` 指向的源码树提供、不在 npm registry 上，因此不写进依赖声明，见 [docs/TESTING.md](docs/TESTING.md)。
+
 ## 设置
 
 在插件详情页分别选择默认图片和视频模型，并设置比例、图片尺寸策略、图片质量、视频分辨率、时长和保存目录。列表读取当前 DSH 的提供方和模型，可自行选择模型；是否支持生成由实际提供方和调用结果决定。配置变更后点击保存。
@@ -38,8 +50,10 @@ DSH 插件：使用 DSH 中配置的模型路线生成图片或视频，并将�
 
 ## 验证
 
+三个入口的分工与覆盖边界见 [docs/TESTING.md](docs/TESTING.md)；产品边界见 [docs/PRODUCT.md](docs/PRODUCT.md)；接口契约见 [docs/API.md](docs/API.md)。
+
 本仓库的测试使用 Node 测试运行器；涉及 DSH 文件权限的测试需要提供官方 SDK 的 `DSH_OFFICIAL_ROOT`。本地 mock 测试不能证明具体远端账号和模型可用。
 
 跨模块集成测试需要已安装依赖的 DSH 源码。先在 shell 中导出指向源码的 `DSH_HOST_SOURCE_ROOT`，再运行 `"$DSH_HOST_SOURCE_ROOT/node_modules/.bin/vitest" run --config test/host-vitest.config.mjs`。未设置时测试会明确报错。
 
-版本：0.1.21
+版本：0.1.22

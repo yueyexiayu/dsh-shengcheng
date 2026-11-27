@@ -1,6 +1,6 @@
 {
   "name": "shengcheng",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "private": true,
   "description": "DSH plugin: generate images and videos using configured media-capable model routes.",
   "type": "module",
@@ -15,6 +15,15 @@
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
     "./locale/*.json": "./locale/*.json"
+  },
+  "peerDependencies": {
+    "react": "^19.3.1"
+  },
+  "peerDependenciesMeta": {
+    "react": { "optional": true }
+  },
+  "devDependencies": {
+    "vitest": "^5.1.2"
   },
   "dsh": {
     "bundle": {

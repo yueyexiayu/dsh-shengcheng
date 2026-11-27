@@ -2,6 +2,18 @@
 
 A DSH plugin that generates images or video using model routes configured in DSH and saves the results locally.
 
+## Install
+
+This is a local DSH desktop plugin loaded as a bundle; it is not published to npm:
+
+1. Put the repository at `$DSH_HOME/plugins/shengcheng` (default `~/.dsh/plugins/shengcheng`).
+2. Add `"shengcheng": "link:/absolute/path/shengcheng"` (or a `file:` reference) to `dependencies` in `$DSH_HOME/profiles/desktop/package.json`.
+3. Add `"shengcheng"` to the same file's `dsh.profile.bundles` array; the package's `cordis.patch.yml` already declares the `insert`.
+4. Restart the DSH desktop app so it loads (the user restarts it manually); a 「生成」 plugin page means it loaded.
+5. Runtime prerequisites are listed under Requirements below: a Host with `generateMedia`, configured provider credentials, and FFmpeg.
+
+Dependencies: the client runtime `react` is an optional peer dependency injected by the DSH frontend; `vitest` is a devDependency used only by `npm run test:host`. `@deepseek-ai/cordis`, `@deepseek-ai/dsh-llm` and `@deepseek-ai/dsh-llm-pi-ai` come only from the DSH host and the source checkout pointed to by `DSH_HOST_SOURCE_ROOT`, are not on the npm registry, and are therefore not declared; see [docs/TESTING.md](docs/TESTING.md).
+
 ## Settings
 
 Choose separate default image and video models on the plugin details page, along with the aspect ratio, image size policy, image quality, video resolution, duration, and output directory. Choose any model listed in the DSH catalog; the provider and actual invocation determine whether generation succeeds. Save after making changes.
@@ -38,8 +50,10 @@ Each image or video attempt has a 600-second deadline covering generation, downl
 
 ## Validation
 
+Test entry points and coverage boundaries: [docs/TESTING.md](docs/TESTING.md). Product boundaries: [docs/PRODUCT.md](docs/PRODUCT.md). Interface contract: [docs/API.md](docs/API.md).
+
 Tests use the Node test runner. Tests involving DSH filesystem permissions require `DSH_OFFICIAL_ROOT` to point to the official SDK. Local mock tests do not establish availability of a particular remote account or model.
 
 For the cross-module integration test, export `DSH_HOST_SOURCE_ROOT` pointing to a DSH source checkout with dependencies installed, then run `"$DSH_HOST_SOURCE_ROOT/node_modules/.bin/vitest" run --config test/host-vitest.config.mjs`. The test reports an error if that variable is missing.
 
-Version: 0.1.21
+Version: 0.1.22
